@@ -150,7 +150,7 @@ function App() {
           </Stack>
         </Toolbar>
       </AppBar>
-      <Container maxWidth="xl" sx={{ py: 2 }}>
+      <Container maxWidth="xl" sx={{ py: 2, maxWidth: { xl: 1850 } }}>
         <Accordion sx={{ mb: 2 }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography variant="body2"><strong>How to use</strong></Typography>
@@ -176,7 +176,7 @@ function App() {
           <strong>Disclaimer:</strong> This tool is not tax advice. Results may contain errors. Consult a qualified tax professional before filing.
         </Typography>
         <Grid container spacing={2}>
-          <Grid size={{ xs: 12, lg: 8 }}>
+          <Grid size={{ xs: 12, lg: 8, xl: 6 }}>
             <Stack spacing={1}>
               <W2Section />
               <Section1099 />
@@ -187,12 +187,36 @@ function App() {
               <CarryoverSection />
             </Stack>
           </Grid>
-          <Grid size={{ xs: 12, lg: 4 }}>
+          <Grid size={{ xs: 12, lg: 4, xl: 3 }}>
             <Box sx={{ position: { lg: 'sticky' }, top: { lg: 16 } }}>
               <Button variant="contained" size="large" onClick={compute} fullWidth sx={{ mb: 2 }}>
                 Compute Taxes
               </Button>
               <SummaryPanel />
+              {fullResult && (
+                <Stack spacing={1} sx={{ mt: 2, display: { xl: 'none' } }}>
+                  <MarginalRatesPanel />
+                  <Button variant="contained" color="secondary" onClick={handleDownloadPdf}>
+                    Download PDF Forms
+                  </Button>
+                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    <Button variant="outlined" size="small" onClick={handleExportDataJSON}>data.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportMarginalRatesJSON}>marginal_rates.json</Button>
+                  </Stack>
+                </Stack>
+              )}
+              {!fullResult && (
+                <Box sx={{ display: { xl: 'none' } }}>
+                  <MarginalRatesPanel />
+                </Box>
+              )}
+            </Box>
+          </Grid>
+          <Grid size={{ xs: 12, xl: 3 }} sx={{ display: { xs: 'none', xl: 'block' } }}>
+            <Box sx={{ position: 'sticky', top: 16 }}>
               <MarginalRatesPanel />
               {fullResult && (
                 <Stack spacing={1} sx={{ mt: 2 }}>

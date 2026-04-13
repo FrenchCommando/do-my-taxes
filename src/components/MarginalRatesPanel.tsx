@@ -31,10 +31,18 @@ export default function MarginalRatesPanel() {
         return (
           <Accordion key={name} disableGutters>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', mr: 2 }}>
-                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>{name}</Typography>
+              <Box
+                onClick={(e) => e.stopPropagation()}
+                sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', mr: 2, userSelect: 'text', cursor: 'text' }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 'bold', mr: 3 }}>{name}</Typography>
                 {currentRate && (
-                  <Typography variant="body2" component="span" sx={{ fontWeight: 'bold', display: 'flex', gap: 2 }}>
+                  <Typography
+                    variant="body2"
+                    component="span"
+                    onClick={(e) => e.stopPropagation()}
+                    sx={{ fontWeight: 'bold', display: 'flex', gap: 2, userSelect: 'text', cursor: 'text' }}
+                  >
                     <span>Fed {pct(currentRate.federal)}</span>
                     <span>NY {pct(currentRate.ny_state)}</span>
                     <span>NYC {pct(currentRate.nyc)}</span>
@@ -48,7 +56,7 @@ export default function MarginalRatesPanel() {
                 {category.note}
               </Typography>
               <Divider sx={{ mb: 1 }} />
-              <TableContainer>
+              <TableContainer sx={{ userSelect: 'text' }}>
                 <Table size="small">
                   <TableHead>
                     <TableRow>
