@@ -1,8 +1,10 @@
 import {
-  Container, AppBar, Toolbar, Typography, Button, Box, Stack, Grid, Paper,
+  Container, AppBar, Toolbar, Typography, Button, Box, Stack, Grid,
+  Accordion, AccordionSummary, AccordionDetails,
 } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useTaxStore } from './store/taxStore';
 import { generateFilledPdfs } from './computation/pdf_filler';
 import W2Section from './components/W2Section';
@@ -102,20 +104,30 @@ function App() {
         </Toolbar>
       </AppBar>
       <Container maxWidth="xl" sx={{ py: 2 }}>
-        <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
-          <Typography variant="body2" color="text.secondary" component="div">
-            <strong>How to use:</strong>
-            <br />1. Fill in your tax info in the sections below (W-2, 1099, etc.). Use <strong>+</strong> to add entries, trash icon to remove.
-            <br />2. Click <strong>Compute Taxes</strong> to run the computation and see your summary.
-            <br />3. Download your filled <strong>PDF forms</strong> or <strong>JSON</strong> output.
-            <br />
-            <br /><strong>Import</strong>/<strong>Export</strong> (top bar) — save or load your input data as JSON.
-            <br /><strong>Reset</strong> — restores the sample data.
-            <br />All data stays in your browser — nothing is sent to any server.
-            <br />To fully clear saved data: open DevTools (F12) &gt; Application &gt; Local Storage &gt; delete <code>tax-input-storage</code>, then reload.
-            <br />Found a bug or have a feature request? <a href="https://github.com/FrenchCommando/do-my-taxes/issues" target="_blank" rel="noopener">Open an issue on GitHub</a>.
-          </Typography>
-        </Paper>
+        <Accordion sx={{ mb: 2, bgcolor: 'grey.50' }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="body2"><strong>How to use</strong></Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Typography variant="body2" color="text.secondary" component="div">
+              1. Fill in your tax info in the sections below (W-2, 1099, etc.). Use <strong>+</strong> to add entries, trash icon to remove.
+              <br />2. Click <strong>Compute Taxes</strong> to run the computation and see your summary.
+              <br />3. Download your filled <strong>PDF forms</strong> or <strong>JSON</strong> output.
+              <br />
+              <br /><strong>Import</strong>/<strong>Export</strong> (top bar) — save or load your input data as JSON.
+              <br /><strong>Reset</strong> — restores the sample data.
+              <br />All data stays in your browser — nothing is sent to any server.
+              <br />To fully clear saved data: open DevTools (F12) &gt; Application &gt; Local Storage &gt; delete <code>tax-input-storage</code>, then reload.
+              <br /><br /><strong>How to file:</strong>
+              <br />Federal — e-file for free at <a href="https://www.freefilefillableforms.com/home/default.php" target="_blank" rel="noopener">Free File Fillable Forms</a> (IRS). Upload or manually enter values from the downloaded PDF.
+              <br />NY State — use the enhanced fill-in forms from the NY Tax Department. Print, sign, and mail.
+              <br /><br />Found a bug or have a feature request? <a href="https://github.com/FrenchCommando/do-my-taxes/issues" target="_blank" rel="noopener">Open an issue on GitHub</a>.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Typography variant="body2" color="error" sx={{ mb: 2 }}>
+          <strong>Disclaimer:</strong> This tool is not tax advice. Results may contain errors. Consult a qualified tax professional before filing.
+        </Typography>
         <Grid container spacing={2}>
           <Grid size={{ xs: 12, lg: 8 }}>
             <Stack spacing={1}>
