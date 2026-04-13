@@ -26,7 +26,7 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 - pdf-lib (PDF generation in browser)
 
 ### Hosting
-- GitHub Pages via GitHub Actions (push to master triggers build + deploy)
+- GitHub Pages via GitHub Actions (push to master triggers test + build + deploy)
 - No backend, no server, no API calls
 - All computation runs in the browser
 
@@ -101,7 +101,12 @@ npm test           # single run
 npm run test:watch # watch mode
 ```
 
-Tests are in `src/computation/compute.test.ts` and verify the computation engine produces no NaN values across scenarios (default input, empty input, no W2 with various income types).
+Tests:
+- `src/computation/compute.test.ts` — verifies no NaN values across hand-built inputs (default, empty, no W2 with various income types)
+- `src/computation/scenarios.test.ts` — 15 scenario tests imported from `taxes1040/tests/scenarios/2025/`, comparing summary and carryover output against the Python reference. Scenario fixtures live in `tests/scenarios/` (outside `src/`, not bundled in production)
+
+### Rounding: banker's rounding (round half to even)
+`pushToDict` uses banker's rounding to match IRS conventions. This is the standard for tax forms — when a value lands exactly on .5, it rounds to the nearest even number.
 
 ### Known pattern: `pushToDict` skips zero values
 `pushToDict` does not store zero values in the forms dict. Downstream code reading form fields must use `|| 0` fallbacks (e.g. `(f['15'] || 0)`) to avoid NaN from arithmetic on `undefined`.
@@ -118,6 +123,8 @@ do-my-taxes/
 |   +-- App.tsx         # Root component (layout, toolbar, instructions)
 |-- public/
 |   +-- forms/2025/     # Blank IRS/NY PDF templates + .keys annotation mappings
+|-- tests/
+|   +-- scenarios/      # Test fixtures from taxes1040 (input.json + expected outputs per scenario)
 |-- .github/workflows/  # GitHub Actions deploy to Pages
 |-- index.html
 |-- package.json

@@ -12,6 +12,20 @@ import {
 } from './form_names';
 import type { TaxConfig } from './config_2025';
 
+/** Python-compatible banker's rounding (round half to even). */
+function bankersRound(value: number, decimals: number): number {
+  const factor = Math.pow(10, decimals);
+  const shifted = value * factor;
+  const truncated = Math.trunc(shifted);
+  const remainder = shifted - truncated;
+  // Check if exactly at .5 boundary (within floating-point tolerance)
+  if (Math.abs(Math.abs(remainder) - 0.5) < 1e-9) {
+    // Round to even
+    return truncated % 2 === 0 ? truncated / factor : (truncated + Math.sign(shifted)) / factor;
+  }
+  return Math.round(shifted) / factor;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type D = Record<string, any>;
 type FormsState = Record<string, D | D[]>;
@@ -146,7 +160,7 @@ export function fillTaxes(
 
   function pushToDict(dd: D, key: string, value: number | boolean | string, roundI = 0) {
     if (value !== 0 && value !== false) {
-      dd[key] = typeof value === 'number' ? Math.round(value * Math.pow(10, roundI)) / Math.pow(10, roundI) : value;
+      dd[key] = typeof value === 'number' ? bankersRound(value, roundI) : value;
     }
   }
 
