@@ -2,8 +2,8 @@
 
 ## What This Project Does
 
-Browser-based US tax form filler (Form 1040 and related federal/state forms).
-Users enter financial data, the app computes taxes and generates filled PDF forms + JSON summaries.
+Browser-based US tax form filler (Form 1040 and related federal/NY state forms) for 2025 single filers.
+Users enter financial data, the app computes taxes and generates filled PDF forms + JSON outputs.
 Everything runs client-side -- no server, no backend, no data leaves the browser.
 
 Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-taxes/
@@ -14,6 +14,7 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
   - That repo has battle-tested tax computation for 2018-2025
   - Input format: `input_data/{year}/input.json` defines the canonical input schema
   - Output: `data.json` (all form fields), `summary.json` (key figures), `worksheet.json` (intermediate), `carryover.json` (next year), `marginal_rates.json`
+  - Blank PDF forms and `.keys` annotation mappings are copied from `forms/2025/`
 
 ## Design Decisions
 
@@ -22,12 +23,10 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 - Vite (build tool / dev server)
 - Zustand (state management, with persist middleware for localStorage)
 - MUI v6 (Material UI component library)
-- react-hook-form (form handling / validation)
-- react-router (navigation)
 - pdf-lib (PDF generation in browser)
 
 ### Hosting
-- GitHub Pages (static site, free)
+- GitHub Pages via GitHub Actions (push to master triggers build + deploy)
 - No backend, no server, no API calls
 - All computation runs in the browser
 
@@ -35,23 +34,27 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 - localStorage via Zustand persist middleware (auto-save, survives browser restart)
 - JSON import/export for portability (backup, cross-device transfer)
 - No server-side storage -- sensitive financial data never leaves the user's machine
+- Migration version in persist config resets stale localStorage on schema changes
 
 ### UI Design
-- Dense one-pager for input
-- All sections visible but greyed/muted until the user edits them
-- Sections mirror the input.json structure: W2, 1099, 1098, Estimated Tax, Charitable, Other
-- Repeatable entries (multiple W2s, 1099s, etc.) with add/remove
-- 1099 has optional sub-sections (Trades, 1256, Foreign Tax) that stay muted unless populated
+- Dense one-pager with two-column layout (input left, summary/output right on large screens)
+- All sections are collapsible accordions, greyed/muted when empty
+- Sections mirror the input.json structure: W2, 1099 (with trades sub-section), 1098, Estimated Tax, Charitable, Other, Prior Year Carryover
+- Repeatable entries (multiple W2s, 1099s, trades, mortgage payments, etc.) with add/remove
+- Pre-filled with sample data on first load
+- Dark/light mode toggle (defaults to system preference)
+- Collapsible instructions with disclaimer always visible
 
-### Output (v1)
-- Two download buttons: PDF (filled forms) and JSON (summary/data)
-- No in-app viewers in v1
+### Output
+- Summary panel showing all computed key figures grouped by form
+- Marginal rates panel with federal/NY/NYC breakdown per income category
+- Download buttons: PDF (merged filled forms), data.json, summary.json, worksheet.json, carryover.json, marginal_rates.json
 
-### Output (future)
-- Summary dashboard (total income, total tax, effective rate)
-- Form-by-form breakdown (each IRS form line)
-- Marginal rate charts
-- Year-over-year comparison
+### PDF Generation
+- Blank IRS PDFs in `public/forms/2025/` with `.keys` mapping files
+- `.keys` files map human-readable field names to PDF annotation hex names
+- pdf-lib fills annotations by matching the last segment of XFA paths (e.g. `f1_14[0]`) to decoded `.keys` entries
+- Forms are flattened after filling and merged into a single PDF
 
 ## Input Schema
 
@@ -64,37 +67,47 @@ W2[]            - employer info, wages, taxes withheld, state/local
 EstimatedIncomeTax  - Federal[] and State[] payments with dates/amounts
 Charitable[]    - entity name + amount (cash contributions)
 Other[]         - property tax, co-op taxes, days in NYC
+prior_year      - optional carryover (taxable income, Schedule D net short/long-term, loss deduction)
 ```
+
+Auto-derived fields (not in UI):
+- `scheduleD` — true if any 1099 has trades
+- `virtual_currency` — true if any trade description contains "crypto"
+- `presidential_election_self` — always false
+
+## Computation Architecture
+
+- `src/computation/fill_taxes.ts` — faithful port of `forms_core_impl.py`, builds full `forms_state` dict
+- `src/computation/config_2025.ts` — year-specific constants and bracket functions
+- `src/computation/form_names.ts` — form key constants
+- `src/computation/marginal_rates.ts` — analytical marginal rate computation (port of `marginal_rates.py`)
+- `src/computation/pdf_filler.ts` — browser-side PDF filling using pdf-lib
+- `src/computation/compute.ts` — thin wrapper that orchestrates fill_taxes + marginal_rates
 
 ## How to Run
 
 ```bash
-# Install dependencies
 npm install
-
-# Dev server (hot reload)
-npm run dev
-
-# Build for production
 npm run build
-
-# Preview production build
 npm run preview
 ```
+
+Then open http://localhost:4173/do-my-taxes/
 
 ## Project Structure
 
 ```
 do-my-taxes/
 |-- src/
-|   |-- components/     # React UI components
+|   |-- components/     # React UI components (W2, 1099, 1098, etc. sections + summary + marginal rates)
 |   |-- computation/    # Tax computation logic (ported from Python)
 |   |-- store/          # Zustand state management
 |   |-- types/          # TypeScript type definitions (input, output)
-|   +-- App.tsx         # Root component
+|   +-- App.tsx         # Root component (layout, toolbar, instructions)
 |-- public/
-|   +-- forms/          # Blank IRS PDF templates for pdf-lib
-|-- index.html          # Entry point
+|   +-- forms/2025/     # Blank IRS/NY PDF templates + .keys annotation mappings
+|-- .github/workflows/  # GitHub Actions deploy to Pages
+|-- index.html
 |-- package.json
 |-- tsconfig.json
 +-- vite.config.ts
