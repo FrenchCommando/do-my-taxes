@@ -4,7 +4,12 @@ import {
 } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import IconButton from '@mui/material/IconButton';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import DarkModeIcon from '@mui/icons-material/DarkMode';
+import LightModeIcon from '@mui/icons-material/LightMode';
+import { useMemo, useState } from 'react';
 import { useTaxStore } from './store/taxStore';
 import { generateFilledPdfs } from './computation/pdf_filler';
 import W2Section from './components/W2Section';
@@ -16,11 +21,15 @@ import OtherSection from './components/OtherSection';
 import CarryoverSection from './components/CarryoverSection';
 import SummaryPanel from './components/SummaryPanel';
 
-const theme = createTheme({
-  palette: { mode: 'light' },
-});
-
 function App() {
+  const prefersDark = useMediaQuery('(prefers-color-scheme: dark)');
+  const [darkMode, setDarkMode] = useState<boolean | null>(null);
+  const isDark = darkMode ?? prefersDark;
+
+  const theme = useMemo(() => createTheme({
+    palette: { mode: isDark ? 'dark' : 'light' },
+  }), [isDark]);
+
   const { compute, importData, exportData, reset, fullResult } = useTaxStore();
 
   const handleExportJSON = () => {
@@ -116,6 +125,9 @@ function App() {
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
             Do My Taxes - 2025 (Single Filer)
           </Typography>
+          <IconButton color="inherit" onClick={() => setDarkMode(!isDark)} sx={{ mr: 1 }}>
+            {isDark ? <LightModeIcon /> : <DarkModeIcon />}
+          </IconButton>
           <Button color="inherit" href="https://github.com/FrenchCommando/do-my-taxes" target="_blank" sx={{ mr: 1 }}>
             GitHub
           </Button>
@@ -127,7 +139,7 @@ function App() {
         </Toolbar>
       </AppBar>
       <Container maxWidth="xl" sx={{ py: 2 }}>
-        <Accordion sx={{ mb: 2, bgcolor: 'grey.50' }}>
+        <Accordion sx={{ mb: 2 }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography variant="body2"><strong>How to use</strong></Typography>
           </AccordionSummary>

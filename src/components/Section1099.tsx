@@ -70,7 +70,7 @@ export default function Section1099() {
                 Trades ({entry.Trades.length})
               </Typography>
               {entry.Trades.map((trade, ti) => (
-                <Box key={ti} sx={{ mb: 1.5, p: 1.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+                <Box key={ti} sx={{ mb: 1.5, p: 1.5, bgcolor: 'action.hover', borderRadius: 1 }}>
                   <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
                     <TextField label="Description" size="small" value={trade.SalesDescription} onChange={(e) => updateTrade(entry.id, ti, { SalesDescription: e.target.value })} sx={{ flex: 1, minWidth: 150 }} />
                     <TextField label="Shares" size="small" value={trade.Shares} onChange={(e) => updateTrade(entry.id, ti, { Shares: e.target.value })} sx={{ width: 100 }} />
