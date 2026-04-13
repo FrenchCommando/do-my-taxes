@@ -113,13 +113,30 @@ async function fillOnePdf(
   return pdfDoc.save();
 }
 
+function isItemizingFederal(formsState: D): boolean {
+  const f1040 = (formsState['Federal/f1040'] as D) || {};
+  const fSA = (formsState['Federal/f1040sa'] as D) || {};
+  return f1040['12'] === fSA['17'] && fSA['17'] > 0;
+}
+
+function isItemizingNY(formsState: D): boolean {
+  const fIT201 = (formsState['ny/it201_fill_in'] as D) || {};
+  const fIT196 = (formsState['ny/it196_fill_in'] as D) || {};
+  return fIT201['34'] === fIT196['49'] && fIT196['49'] > 0;
+}
+
 export async function generateFilledPdfs(
   result: FillTaxesResult,
 ): Promise<Uint8Array> {
   const { formsState } = result;
   const filledPages: Uint8Array[] = [];
 
+  const skipForms = new Set<string>();
+  if (!isItemizingFederal(formsState)) skipForms.add('Federal/f1040sa');
+  if (!isItemizingNY(formsState)) skipForms.add('ny/it196_fill_in');
+
   for (const [formKey, formData] of Object.entries(formsState)) {
+    if (skipForms.has(formKey)) continue;
     if (Array.isArray(formData)) {
       // Multiple pages (e.g. f8949 with many trades)
       for (const page of formData) {

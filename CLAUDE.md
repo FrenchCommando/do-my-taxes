@@ -37,7 +37,7 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 - Migration version in persist config resets stale localStorage on schema changes
 
 ### UI Design
-- Dense one-pager with two-column layout (input left, summary/output right on large screens)
+- Dense one-pager with responsive column layout: two columns at `lg` (input + summary/marginal/downloads), three columns at `xl` (input + summary + marginal rates & downloads)
 - All sections are collapsible accordions, greyed/muted when empty
 - Sections mirror the input.json structure: W2, 1099 (with trades sub-section), 1098, Estimated Tax, Charitable, Other, Prior Year Carryover
 - Repeatable entries (multiple W2s, 1099s, trades, mortgage payments, etc.) with add/remove
@@ -93,6 +93,18 @@ npm run preview
 ```
 
 Then open http://localhost:4173/do-my-taxes/
+
+## Testing
+
+```bash
+npm test           # single run
+npm run test:watch # watch mode
+```
+
+Tests are in `src/computation/compute.test.ts` and verify the computation engine produces no NaN values across scenarios (default input, empty input, no W2 with various income types).
+
+### Known pattern: `pushToDict` skips zero values
+`pushToDict` does not store zero values in the forms dict. Downstream code reading form fields must use `|| 0` fallbacks (e.g. `(f['15'] || 0)`) to avoid NaN from arithmetic on `undefined`.
 
 ## Project Structure
 

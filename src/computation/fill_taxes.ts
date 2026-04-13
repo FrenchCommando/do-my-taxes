@@ -31,8 +31,8 @@ interface SumTrades {
 }
 
 function getMainInfo(d: D) {
-  const w = d['W2'][0];
-  const fullName: string = w['FullName'];
+  const w = d['W2'][0] || {};
+  const fullName: string = w['FullName'] || '';
   const parts = fullName.split(' ');
   const initial = parts.length > 2 ? parts[1][0] : '';
   return {
@@ -259,9 +259,9 @@ export function fillTaxes(
     if (dividendsQualified) {
       buildQualifiedDividendsWorksheet();
     } else {
-      pushToDict(f, '16', computation(f['15']));
+      pushToDict(f, '16', computation(f['15'] || 0));
     }
-    summaryInfo[`${k_1040} 16 Tax`] = f['16'];
+    summaryInfo[`${k_1040} 16 Tax`] = f['16'] || 0;
 
     buildForm1040s2();
     if (((formsState[k_1040s2] as D) || {})['3'] === 0 &&
@@ -406,10 +406,10 @@ export function fillTaxes(
     pushToDict(f, 'i_1a_a', foreignSourceIncome);
     pushToDict(f, 'i_1a_total', foreignSourceIncome);
 
-    const grossIncome = (formsState[k_1040] as D)['9'];
+    const grossIncome = (formsState[k_1040] as D)['9'] || 0;
     const apportionmentRatio = grossIncome > 0 ? Math.round(foreignSourceIncome / grossIncome * 10000) / 10000 : 0;
 
-    const deduction = (formsState[k_1040] as D)['12'];
+    const deduction = (formsState[k_1040] as D)['12'] || 0;
     const line3a = grossIncome > 5000 ? Math.round(deduction * apportionmentRatio * 100) / 100 : deduction;
     pushToDict(f, '2_a', line3a);
     pushToDict(f, 'i_1a_a', foreignSourceIncome);
@@ -426,7 +426,7 @@ export function fillTaxes(
     pushToDict(f, '15', foreignSourceIncome - line3a);
     pushToDict(f, '17', Math.max(0, f['15']));
 
-    const taxableIncome = (formsState[k_1040] as D)['15'];
+    const taxableIncome = (formsState[k_1040] as D)['15'] || 0;
     pushToDict(f, '18', taxableIncome);
 
     let limitationFraction = 0;
@@ -436,7 +436,7 @@ export function fillTaxes(
     }
     pushToDict(f, '19', limitationFraction, 4);
 
-    const usTax = (formsState[k_1040] as D)['16'];
+    const usTax = (formsState[k_1040] as D)['16'] || 0;
     pushToDict(f, '20', usTax);
     const maxCredit = Math.round(limitationFraction * usTax);
     pushToDict(f, '21', maxCredit);
@@ -473,9 +473,9 @@ export function fillTaxes(
     pushNameSsn(f);
 
     pushToDict(f, '1', d['medical_expenses'] || 0);
-    pushToDict(f, '2', (formsState[k_1040] as D)['11']);
-    pushToDict(f, '3', f['2'] * 0.075);
-    pushToDict(f, '4', Math.max(0, (f['1'] || 0) - f['3']));
+    pushToDict(f, '2', (formsState[k_1040] as D)['11'] || 0);
+    pushToDict(f, '3', (f['2'] || 0) * 0.075);
+    pushToDict(f, '4', Math.max(0, (f['1'] || 0) - (f['3'] || 0)));
 
     if (d['deduct_sales_tax']) {
       pushToDict(f, '5_a_y', true);
@@ -695,7 +695,7 @@ export function fillTaxes(
       pushToDict(f, '8_value', 0);
       pushToDict(f, '9_value', (f['7_value'] || 0) - (f['8_value'] || 0));
       pushToDict(f, '10_value',
-        Math.max(0, (formsState[k_1040] as D)['16'] + ((formsState[k_1040s2] as D) || {})['2'] || 0));
+        Math.max(0, ((formsState[k_1040] as D)['16'] || 0) + (((formsState[k_1040s2] as D) || {})['2'] || 0)));
     } else {
       pushToDict(f, '7_value', 0);
       pushToDict(f, '9_value', 0);
@@ -886,7 +886,7 @@ export function fillTaxes(
     pushToDict(f, '1', medicareWages);
     pushSum(f, '4', ['1', '2', '3']);
     pushToDict(f, '5', 200_000);
-    pushToDict(f, '6', Math.max(0, f['4'] - f['5']));
+    pushToDict(f, '6', Math.max(0, (f['4'] || 0) - (f['5'] || 0)));
     pushToDict(f, '7', (f['6'] || 0) * 0.009);
     if ('7' in f) summaryInfo[`${k_8959} 7 Additional Medicare Tax on Medicare wages`] = f['7'];
 
@@ -903,9 +903,9 @@ export function fillTaxes(
 
     pushToDict(f, '19', medicareTax);
     pushSum(f, '20', ['1']);
-    pushToDict(f, '21', f['20'] * 0.0145);
+    pushToDict(f, '21', (f['20'] || 0) * 0.0145);
     if ('21' in f) summaryInfo[`${k_8959} 21 Regular Medicare Tax withholding on Medicare wages`] = f['21'];
-    pushToDict(f, '22', Math.max(0, f['19'] - f['21']));
+    pushToDict(f, '22', Math.max(0, (f['19'] || 0) - (f['21'] || 0)));
     if ('22' in f) summaryInfo[`${k_8959} Additional Medicare Tax withholding on Medicare wages`] = f['22'];
 
     pushSum(f, '24', ['22', '23']);
@@ -950,7 +950,7 @@ export function fillTaxes(
       return;
     }
     ws[1] = config.salt_limit;
-    ws[2] = (formsState[k_1040] as D)['11'];
+    ws[2] = (formsState[k_1040] as D)['11'] || 0;
     ws[4] = ws[2];
     ws[5] = config.salt_phaseout_start;
     if (ws[4] > ws[5]) {
@@ -1035,8 +1035,8 @@ export function fillTaxes(
 
   function buildQualifiedDividendsWorksheet() {
     const ws = worksheet(w_qualified_dividends_and_capital_gains, 25);
-    ws[1] = (formsState[k_1040] as D)['15'];
-    ws[2] = (formsState[k_1040] as D)['3_a'];
+    ws[1] = (formsState[k_1040] as D)['15'] || 0;
+    ws[2] = (formsState[k_1040] as D)['3_a'] || 0;
     if (d['scheduleD']) {
       ws[3] = Math.max(0, Math.min((formsState[k_1040sd] as D)['15'], (formsState[k_1040sd] as D)['16']));
     } else {
@@ -1072,11 +1072,11 @@ export function fillTaxes(
     const ws = worksheet(w_should_fill_6251, 13);
     const itemized = (formsState[k_1040] as D)['12'] === ((formsState[k_1040sa] as D) || {})['17'];
     if (itemized) {
-      ws[1] = (formsState[k_1040] as D)['15'];
-      ws[2] = ((formsState[k_1040sa] as D) || {})['7'];
+      ws[1] = (formsState[k_1040] as D)['15'] || 0;
+      ws[2] = ((formsState[k_1040sa] as D) || {})['7'] || 0;
       ws[3] = ws[1] + ws[2];
     } else {
-      ws[3] = (formsState[k_1040] as D)['11'];
+      ws[3] = (formsState[k_1040] as D)['11'] || 0;
     }
     ws[4] = k_1040s1 in formsState
       ? ((formsState[k_1040s1] as D)['1'] || 0) + ((formsState[k_1040s1] as D)['8_z'] || 0)
@@ -1102,7 +1102,7 @@ export function fillTaxes(
       return true;
     }
     ws[12] = ws[11] * 0.26;
-    ws[13] = (formsState[k_1040] as D)['16'] + ((formsState[k_1040s2] as D) || {})['2'] || 0;
+    ws[13] = ((formsState[k_1040] as D)['16'] || 0) + (((formsState[k_1040s2] as D) || {})['2'] || 0);
     const result = ws[13] < ws[12];
     summaryInfo[`${w_should_fill_6251} Should fill 6251`] = result;
     return result;
@@ -1149,7 +1149,7 @@ export function fillTaxes(
     pushSum(f, '38', ['37']);
     const computedTaxNY = computation_ny(f['38'] || 0);
     summaryInfo[`${k_it201} 39 Tax pre-Recapture`] = computedTaxNY;
-    const recaptureAmountNY = computation_ny_recapture(f['38'], f['33']);
+    const recaptureAmountNY = computation_ny_recapture(f['38'] || 0, f['33'] || 0);
     const computedTaxNYFull = computedTaxNY + recaptureAmountNY;
     summaryInfo[`${k_it201} 39 Tax post-Recapture`] = computedTaxNYFull;
     pushToDict(f, '39', computedTaxNYFull);
@@ -1214,9 +1214,9 @@ export function fillTaxes(
     const f = form(k_it196);
     f['name'] = (formsState[k_1040] as D)['self_first_name_initial'] + ' ' + (formsState[k_1040] as D)['self_last_name'];
 
-    pushToDict(f, '2', (formsState[k_it201] as D)['19']);
-    pushToDict(f, '3', f['2'] * 0.10);
-    pushToDict(f, '4', Math.max(0, (f['1'] || 0) - f['3']));
+    pushToDict(f, '2', (formsState[k_it201] as D)['19'] || 0);
+    pushToDict(f, '3', (f['2'] || 0) * 0.10);
+    pushToDict(f, '4', Math.max(0, (f['1'] || 0) - (f['3'] || 0)));
 
     pushToDict(f, '5', stateTax + localTax);
     pushToDict(f, '6', ((formsState[k_1040sa] as D) || {})['5_c'] || 0);
@@ -1245,10 +1245,10 @@ export function fillTaxes(
 
     buildNYLine40Worksheet();
     buildNYLine41Worksheet();
-    pushToDict(f, '42', f['40'] - f['41']);
+    pushToDict(f, '42', (f['40'] || 0) - (f['41'] || 0));
     pushSum(f, '45', ['42', '43', '44']);
 
-    const nyAGI = (formsState[k_it201] as D)['33'];
+    const nyAGI = (formsState[k_it201] as D)['33'] || 0;
     buildNYLine46Worksheet();
     if (nyAGI <= 100_000) {
       pushToDict(f, '47', f['45']);
@@ -1277,7 +1277,7 @@ export function fillTaxes(
     }
     ws[3] = ws[1] - ws[2];
     ws[4] = ws[3] * 0.80;
-    ws[5] = (formsState[k_it201] as D)['19'];
+    ws[5] = (formsState[k_it201] as D)['19'] || 0;
     ws[6] = config.ny_itemized_deduction_threshold;
     if (ws[6] >= ws[5]) {
       summaryInfo[`${w_ny_line40_itemized_deductions} 10 Total itemized deductions`] = ws[1];
@@ -1294,7 +1294,7 @@ export function fillTaxes(
 
   function buildNYLine41Worksheet() {
     const ws = worksheet(w_ny_line41_itemized_deductions_subtractions, 11);
-    const federalAGI = (formsState[k_it201] as D)['19'];
+    const federalAGI = (formsState[k_it201] as D)['19'] || 0;
     const it196 = formsState[k_it196] as D;
     const taxesSubtracted = (it196['5'] || 0) + (it196['8'] || 0);
     if (federalAGI <= config.ny_itemized_deduction_threshold) {
@@ -1323,7 +1323,7 @@ export function fillTaxes(
 
   function buildNYLine46Worksheet() {
     const ws = worksheet(w_ny_line46_itemized_deduction_adjustments, 7);
-    const nyAGI = (formsState[k_it201] as D)['33'];
+    const nyAGI = (formsState[k_it201] as D)['33'] || 0;
     const line45 = ((formsState[k_it196] as D) || {})['45'] || 0;
     if (nyAGI <= 100_000) return;
     if (nyAGI > 1_000_000) return;

@@ -63,6 +63,7 @@ export function computation_2025(amount: number): number {
 }
 
 export function computation_2025_ny(amount: number): number {
+  if (amount <= 0) return 0;
   if (amount <= 8_500) return amount * 0.04;
   if (amount <= 11_700) return 340 + (amount - 8_500) * 0.045;
   if (amount <= 13_900) return 484 + (amount - 11_700) * 0.0525;
@@ -91,6 +92,7 @@ export function computation_2025_ny_recapture(amount: number, gross: number): nu
 }
 
 export function computation_2025_nyc(amount: number): number {
+  if (amount <= 0) return 0;
   if (amount <= 12_000) return amount * 0.03078;
   if (amount <= 25_000) return 369 + (amount - 12_000) * 0.03762;
   if (amount <= 50_000) return 858 + (amount - 25_000) * 0.03819;
