@@ -43,6 +43,7 @@ function buildInputDict(input: TaxInput): Record<string, unknown> {
     health_savings_account_employer_contributions: input.health_savings_account_employer_contributions,
     health_savings_account_distributions: input.health_savings_account_distributions,
     medical_expenses: 0,
+    prior_year: input.prior_year || undefined,
   };
 }
 

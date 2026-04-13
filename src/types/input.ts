@@ -96,6 +96,13 @@ export interface OtherEntry {
   DaysInNYC: number;
 }
 
+export interface PriorYear {
+  taxable_income: number;
+  schedule_d_net_short_term: number;
+  schedule_d_net_long_term: number;
+  schedule_d_loss_deduction: number;
+}
+
 export interface TaxInput {
   W2: W2Entry[];
   '1099': Entry1099[];
@@ -110,6 +117,8 @@ export interface TaxInput {
   routing_number: string;
   checking: boolean;
   account_number: string;
+  // Prior year carryover (optional — only needed if you had capital losses or excess foreign tax credit)
+  prior_year: PriorYear | null;
   // HSA
   health_savings_account: boolean;
   health_savings_account_contributions: number;
@@ -261,6 +270,7 @@ export function createDefaultInput(): TaxInput {
       { id: crypto.randomUUID(), PropertyTax: 2500, CoopStateTaxes: 10, DaysInNYC: 365 },
     ],
     occupation: 'working', phone: '555-555-5555', email: 'blah@gmail.com',
+    prior_year: null,
     routing_number: '021000011', checking: true, account_number: '11112222333',
     health_savings_account: false,
     health_savings_account_contributions: 0,

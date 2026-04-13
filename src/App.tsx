@@ -13,6 +13,7 @@ import Section1098 from './components/Section1098';
 import EstimatedTaxSection from './components/EstimatedTaxSection';
 import CharitableSection from './components/CharitableSection';
 import OtherSection from './components/OtherSection';
+import CarryoverSection from './components/CarryoverSection';
 import SummaryPanel from './components/SummaryPanel';
 
 const theme = createTheme({
@@ -51,6 +52,28 @@ function App() {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'summary.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportWorksheetJSON = () => {
+    if (!fullResult) return;
+    const blob = new Blob([JSON.stringify(fullResult.worksheets, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'worksheet.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportCarryoverJSON = () => {
+    if (!fullResult) return;
+    const blob = new Blob([JSON.stringify(fullResult.carryover, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'carryover.json';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -137,6 +160,7 @@ function App() {
               <EstimatedTaxSection />
               <CharitableSection />
               <OtherSection />
+              <CarryoverSection />
             </Stack>
           </Grid>
           <Grid size={{ xs: 12, lg: 4 }}>
@@ -150,13 +174,11 @@ function App() {
                   <Button variant="contained" color="secondary" onClick={handleDownloadPdf}>
                     Download PDF Forms
                   </Button>
-                  <Stack direction="row" spacing={1}>
-                    <Button variant="outlined" size="small" onClick={handleExportDataJSON}>
-                      data.json
-                    </Button>
-                    <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>
-                      summary.json
-                    </Button>
+                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    <Button variant="outlined" size="small" onClick={handleExportDataJSON}>data.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
                   </Stack>
                 </Stack>
               )}
