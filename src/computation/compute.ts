@@ -3,6 +3,8 @@ import type { TaxInput } from '../types/input';
 import type { TaxSummary } from '../types/output';
 import { fillTaxes } from './fill_taxes';
 import type { FillTaxesResult } from './fill_taxes';
+import { computeMarginalRates } from './marginal_rates';
+import type { MarginalRatesResult } from './marginal_rates';
 import {
   CONFIG_2025,
   computation_2025,
@@ -45,6 +47,15 @@ function buildInputDict(input: TaxInput): Record<string, unknown> {
     medical_expenses: 0,
     prior_year: input.prior_year || undefined,
   };
+}
+
+export function computeAllWithRates(input: TaxInput): { result: FillTaxesResult; marginalRates: MarginalRatesResult } {
+  const d = buildInputDict(input);
+  const result = fillTaxes(
+    d, CONFIG_2025, computation_2025, computation_2025_ny, computation_2025_ny_recapture, computation_2025_nyc,
+  );
+  const marginalRates = computeMarginalRates(result, d);
+  return { result, marginalRates };
 }
 
 export function computeAll(input: TaxInput): FillTaxesResult {

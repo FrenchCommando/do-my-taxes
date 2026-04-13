@@ -20,6 +20,7 @@ import CharitableSection from './components/CharitableSection';
 import OtherSection from './components/OtherSection';
 import CarryoverSection from './components/CarryoverSection';
 import SummaryPanel from './components/SummaryPanel';
+import MarginalRatesPanel from './components/MarginalRatesPanel';
 
 function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)');
@@ -30,7 +31,7 @@ function App() {
     palette: { mode: isDark ? 'dark' : 'light' },
   }), [isDark]);
 
-  const { compute, importData, exportData, reset, fullResult } = useTaxStore();
+  const { compute, importData, exportData, reset, fullResult, marginalRates } = useTaxStore();
 
   const handleExportJSON = () => {
     const data = exportData();
@@ -83,6 +84,17 @@ function App() {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'carryover.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportMarginalRatesJSON = () => {
+    if (!marginalRates) return;
+    const blob = new Blob([JSON.stringify(marginalRates, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'marginal_rates.json';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -181,6 +193,7 @@ function App() {
                 Compute Taxes
               </Button>
               <SummaryPanel />
+              <MarginalRatesPanel />
               {fullResult && (
                 <Stack spacing={1} sx={{ mt: 2 }}>
                   <Button variant="contained" color="secondary" onClick={handleDownloadPdf}>
@@ -191,6 +204,7 @@ function App() {
                     <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
                     <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
                     <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
+                    <Button variant="outlined" size="small" onClick={handleExportMarginalRatesJSON}>marginal_rates.json</Button>
                   </Stack>
                 </Stack>
               )}

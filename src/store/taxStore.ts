@@ -21,12 +21,14 @@ import {
 } from '../types/input';
 import type { TaxSummary } from '../types/output';
 import type { FillTaxesResult } from '../computation/fill_taxes';
-import { computeTaxes, computeAll } from '../computation/compute';
+import type { MarginalRatesResult } from '../computation/marginal_rates';
+import { computeTaxes, computeAllWithRates } from '../computation/compute';
 
 interface TaxStore {
   input: TaxInput;
   summary: TaxSummary | null;
   fullResult: FillTaxesResult | null;
+  marginalRates: MarginalRatesResult | null;
 
   setField: <K extends keyof TaxInput>(key: K, value: TaxInput[K]) => void;
 
@@ -81,6 +83,7 @@ export const useTaxStore = create<TaxStore>()(
       input: createDefaultInput(),
       summary: null,
       fullResult: null,
+      marginalRates: null,
 
       setField: (key, value) =>
         set((s) => ({ input: { ...s.input, [key]: value } })),
@@ -241,18 +244,18 @@ export const useTaxStore = create<TaxStore>()(
 
       compute: () => {
         try {
-          const fullResult = computeAll(get().input);
+          const { result: fullResult, marginalRates } = computeAllWithRates(get().input);
           const summary = computeTaxes(get().input);
-          set({ summary, fullResult });
+          set({ summary, fullResult, marginalRates });
         } catch (e) {
           console.error('Tax computation error:', e);
           alert('Computation error: ' + (e instanceof Error ? e.message : String(e)));
         }
       },
 
-      importData: (data) => set({ input: data, summary: null, fullResult: null }),
+      importData: (data) => set({ input: data, summary: null, fullResult: null, marginalRates: null }),
       exportData: () => get().input,
-      reset: () => set({ input: createDefaultInput(), summary: null, fullResult: null }),
+      reset: () => set({ input: createDefaultInput(), summary: null, fullResult: null, marginalRates: null }),
     }),
     {
       name: 'tax-input-storage',
