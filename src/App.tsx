@@ -88,7 +88,12 @@ function App() {
       <CssBaseline />
       <AppBar position="static">
         <Toolbar>
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>Do My Taxes - 2025 (Single Filer)</Typography>
+          <Typography variant="h6" sx={{ flexGrow: 1 }}>
+            Do My Taxes - 2025 (Single Filer)
+          </Typography>
+          <Button color="inherit" href="https://github.com/FrenchCommando/do-my-taxes" target="_blank" sx={{ mr: 1 }}>
+            GitHub
+          </Button>
           <Stack direction="row" spacing={1}>
             <Button color="inherit" onClick={handleImportJSON}>Import</Button>
             <Button color="inherit" onClick={handleExportJSON}>Export</Button>
@@ -108,6 +113,7 @@ function App() {
             <br /><strong>Reset</strong> — restores the sample data.
             <br />All data stays in your browser — nothing is sent to any server.
             <br />To fully clear saved data: open DevTools (F12) &gt; Application &gt; Local Storage &gt; delete <code>tax-input-storage</code>, then reload.
+            <br />Found a bug or have a feature request? <a href="https://github.com/FrenchCommando/do-my-taxes/issues" target="_blank" rel="noopener">Open an issue on GitHub</a>.
           </Typography>
         </Paper>
         <Grid container spacing={2}>
