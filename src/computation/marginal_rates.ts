@@ -1,560 +1,501 @@
-// Port of taxes1040/marginal_rates.py — analytical marginal rate computation
-// Runs once from baseline forms_state, derives exact marginal rates per income category
+// Port of taxes1040/marginal_rates.py - marginal tax rates by re-running the real tax computation.
+//
+// For each input category (wages, gains, dividends, deductions, ...) the input is increased by an amount x
+// and the full computation (fill_taxes.ts) is re-run. Total tax is split into
+//     federal = Form 1040 line 24 (includes AMT, NIIT, Additional Medicare Tax, credits)
+//     NY state = IT-201 line 46
+//     NYC = IT-201 line 58 minus the NYC school tax credits (lines 69, 69a)
+// The computation runs with `exact` (no rounding), so the tax is piecewise linear in x. Knots (where the
+// marginal rate changes) are found by recursive subdivision and placed where the left and right lines meet;
+// jumps (cliffs) are located by bisection. Each knot is labelled with the thresholds crossed between its
+// two sides (brackets, NIIT, SALT, AMT, itemizing, ...). Every rule in the computation is reflected
+// automatically - there is no separate model of the tax rules here.
 
-import type { FillTaxesResult } from './fill_taxes';
-import type { TaxConfig } from './config_2025';
+import { bankersRound, fillTaxes, getFilingStatus } from './fill_taxes';
+import { resolveConfig } from './config';
+import type { FilingStatus, TaxConfig, TaxYear } from './config';
 import {
-  k_1040, k_1040sa, k_1040sd, k_1040s3, k_it201, k_it196,
-  w_mortgage_interest_deduction,
+  k_1040, k_1040s1a, k_1040sa, k_1040sd, k_6251, k_8959, k_8960, k_it196, k_it201,
+  w_qualified_dividends_and_capital_gains, w_salt_deduction,
 } from './form_names';
-import {
-  CONFIG_2025,
-  computation_2025,
-  computation_2025_ny,
-  computation_2025_nyc,
-} from './config_2025';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type D = Record<string, any>;
 
-const FED_BRACKETS = [11_925, 48_475, 103_350, 197_300, 250_525, 626_350];
-const NY_BRACKETS = [8_500, 11_700, 13_900, 80_650, 215_400, 1_077_550, 5_000_000, 25_000_000];
-const NYC_BRACKETS = [12_000, 25_000, 50_000];
-const NY_RECAPTURE_BRACKETS = [215_400, 1_077_550, 5_000_000, 25_000_000];
+const INCOME_HORIZON = 30_000_000;  // past the top NY bracket ($25M)
+const SLOPE_STEP = 100;  // width used to measure one-sided slopes
+const LOCATE_WIDTH = 4 * SLOPE_STEP;  // intervals this small holding a slope change are resolved to a knot
+const SLOPE_TOLERANCE = 5e-5;  // slope changes below this are treated as linear
+const LABEL_OFFSET = 3 * SLOPE_STEP;  // thresholds crossed within this distance of a knot label it
+const COMPONENTS = ['federal', 'ny_state', 'nyc'] as const;
+type Taxes = [number, number, number];
 
-interface Baseline {
-  agi: number;
-  taxable_income: number;
-  is_itemizing: boolean;
-  itemized: number;
-  net_stcg: number;
-  net_ltcg: number;
-  net_capital: number;
-  total_qualified: number;
-  ny_agi: number;
-  ny_taxable: number;
-  medicare_wages: number;
-  salt_total: number;
-  salt_deduction: number;
-  foreign_tax: number;
-  foreign_tax_paid: number;
-  foreign_tax_limited: boolean;
-  mortgage_deduction_ratio: number;
-  ny_mortgage_deduction_ratio: number;
-  ny_itemized: number;
-  charitable_ny: number;
-}
-
-interface Rates {
+export interface Rates {
   federal: number;
   ny_state: number;
   nyc: number;
   combined: number;
 }
 
-interface Segment {
+export interface Segment {
   from: number;
   to: number | null;
   rates: Rates;
   next_knot?: string;
 }
 
-interface Category {
-  note: string;
-  segments: Segment[];
-}
-
 export interface MarginalRatesResult {
-  year: string;
-  baseline: D;
-  marginal_rates: Record<string, Category>;
+  year: TaxYear;
+  filing_status: FilingStatus;
+  method: string;
+  baseline: Record<string, number | boolean>;
+  marginal_rates: Record<string, { note: string; segments: Segment[] }>;
 }
 
-function bracketRate(fn: (x: number) => number, taxableIncome: number): number {
-  return fn(taxableIncome + 1) - fn(taxableIncome);
-}
+const formatDollars = (amount: number) => Math.round(amount).toLocaleString('en-US');
 
-function saltDAgi(agi: number, config: TaxConfig): number {
-  if (agi <= config.salt_phaseout_start) return 0;
-  const effective = config.salt_limit - config.salt_phaseout_rate * (agi - config.salt_phaseout_start);
-  if (effective > config.salt_floor) return -config.salt_phaseout_rate;
-  return 0;
-}
+// ---------------------------------------------------------------------------------------------------------
+// Input changes, one per category: each modifies a copy of the input data for `amount` more dollars
 
-function saltAgiAtFloor(config: TaxConfig): number {
-  return config.salt_phaseout_start + (config.salt_limit - config.salt_floor) / config.salt_phaseout_rate;
-}
+type Change = (data: D, amount: number) => void;
 
-function extractBaseline(result: FillTaxesResult, baseData: D): Baseline {
-  const fs = result.formsState;
-  const ws = result.worksheets;
-  const f1040 = fs[k_1040] as D;
-  const fSA = (fs[k_1040sa] || {}) as D;
-  const fSD = (fs[k_1040sd] || {}) as D;
-  const fIT201 = (fs[k_it201] || {}) as D;
-  const fIT196 = (fs[k_it196] || {}) as D;
-
-  const agi = f1040['11_a'] || f1040['11'] || 0;
-  const taxableIncome = f1040['15'] || 0;
-  const itemized = fSA['17'] || 0;
-  const line12 = f1040['12_e'] ?? f1040['12'] ?? 0;
-  const isItemizing = line12 === itemized;
-
-  const hasSD = k_1040sd in fs;
-  const netSTCG = hasSD ? (fSD['7'] || 0) : 0;
-  const netLTCG = hasSD ? (fSD['15'] || 0) : 0;
-  const netCapital = hasSD ? (fSD['16'] || 0) : 0;
-
-  const qualifiedDividends = f1040['3_a'] || 0;
-  const sdGain = hasSD ? Math.max(0, Math.min(netLTCG, netCapital)) : 0;
-
-  const nyAGI = fIT201['33'] || 0;
-  const nyTaxable = fIT201['37'] || 0;
-  const medicareWages: number = baseData['W2'].reduce((s: number, w: D) => s + w['Medicare_wages'], 0);
-
-  const saltTotal = fSA['5_d'] || 0;
-  const saltDeduction = fSA['5_e'] || 0;
-
-  const foreignTaxPaid: number = (baseData['1099'] || []).reduce((s: number, i: D) => s + (i['Foreign Tax Paid'] || 0), 0);
-  const foreignTaxCredit = k_1040s3 in fs ? ((fs[k_1040s3] as D)['1'] || 0) : 0;
-
-  const mortWs = ws[w_mortgage_interest_deduction] || [];
-  let mortgageRatio = 1.0;
-  let nyMortgageRatio = 1.0;
-  if (mortWs.length > 14 && mortWs[12] > 0) {
-    mortgageRatio = Math.min(1.0, mortWs[11] / mortWs[12]);
-    nyMortgageRatio = Math.min(1.0, CONFIG_2025.ny_mortgage_limit / mortWs[12]);
+function addWages(data: D, amount: number) {
+  const w2 = (data['W2'] as D[]).find(entry => (entry['Owner'] ?? 'self') === 'self');
+  if (!w2) {
+    data['W2'].push({ Wages: amount, Medicare_wages: amount, Owner: 'self' });
+    return;
   }
+  w2['Wages'] += amount;
+  w2['Medicare_wages'] += amount;
+}
 
+function new1099(data: D, fields: D) {
+  (data['1099'] ??= []).push({ Institution: 'Marginal', ...fields });
+}
+
+function addTrade(data: D, amount: number, longShort: string, formCode: string) {
+  new1099(data, {
+    Trades: [{
+      SalesDescription: 'MARGINAL', Shares: '1', DateAcquired: 'VARIOUS', DateSold: 'VARIOUS',
+      Proceeds: amount, Cost: 0, LongShort: longShort, FormCode: formCode,
+    }],
+  });
+  data['scheduleD'] = true;
+}
+
+function add1256(data: D, amount: number) {
+  // Form 6781 has room for 3 lines: add to an existing aggregate entry when there is one
+  const entry = (data['1099'] as D[] | undefined)?.find(
+    each => (each['Realized1256'] || 0) !== 0 || (each['Unrealized1256'] || 0) !== 0);
+  if (entry) {
+    entry['Realized1256'] = (entry['Realized1256'] || 0) + amount;
+  } else {
+    new1099(data, { Realized1256: amount });
+  }
+}
+
+function addHsa(data: D, amount: number) {
+  data['health_savings_account'] = true;
+  data['health_savings_account_contributions'] = (data['health_savings_account_contributions'] || 0) + amount;
+}
+
+function addMortgageInterest(data: D, amount: number) {
+  const entry = data['1098'][0];
+  if (!entry['Payments'] || entry['Payments'].length === 0) {
+    entry['Payments'] = [{ InterestAmount: 0, PrincipalAmount: 0 }];
+  }
+  entry['Payments'][0]['InterestAmount'] += amount;
+}
+
+function addForeignTax(data: D, amount: number) {
+  const entry = (data['1099'] as D[]).find(each => (each['Foreign Tax Paid'] || 0) > 0)!;
+  entry['Foreign Tax Paid'] += amount;
+}
+
+type Category = [name: string, note: string, change: Change, horizon: number];
+
+function categories(baseData: D, baseMetrics: Metrics, config: TaxConfig): Category[] {
+  const hsaRoom = ((baseData['health_savings_account_coverage'] ?? 'self') === 'family'
+    ? config.hsa_max_contribution_family
+    : config.hsa_max_contribution)
+    - (baseData['health_savings_account_contributions'] || 0)
+    - (baseData['health_savings_account_employer_contributions'] || 0);
+  const agi = baseMetrics.agi;
+  const result: Category[] = [
+    ['W2 Wages', 'added to the first W2 (wages and Medicare wages)', addWages, INCOME_HORIZON],
+    ['Short-term capital gain', 'new Form 8949 box A trade',
+      (data, amount) => addTrade(data, amount, 'SHORT', 'A'), INCOME_HORIZON],
+    ['Long-term capital gain', 'new Form 8949 box D trade',
+      (data, amount) => addTrade(data, amount, 'LONG', 'D'), INCOME_HORIZON],
+    ['Qualified dividends', 'new 1099-DIV, qualified',
+      (data, amount) => new1099(data, { 'Qualified Dividends': amount, 'Ordinary Dividends': amount }), INCOME_HORIZON],
+    ['Ordinary dividends (non-qualified)', 'new 1099-DIV, non-qualified',
+      (data, amount) => new1099(data, { 'Ordinary Dividends': amount }), INCOME_HORIZON],
+    ['Interest income', 'new 1099-INT',
+      (data, amount) => new1099(data, { Interest: amount }), INCOME_HORIZON],
+    ['1256 contracts', 'Form 6781 realized gain (60% long-term / 40% short-term)', add1256, INCOME_HORIZON],
+    ['HSA contribution', `Form 8889, up to the remaining limit ($${formatDollars(Math.max(0, hsaRoom))})`,
+      addHsa, Math.max(0, hsaRoom)],
+    ['Charitable contributions', 'new cash gift (Schedule A line 11, IT-196 line 16)',
+      (data, amount) => (data['Charitable'] ??= []).push({ Entity: 'Marginal', Amount: amount }), agi],
+    ['Property tax', 'added to Schedule A line 5c / IT-196 line 6',
+      (data, amount) => (data['Other'] ??= []).push({ PropertyTax: amount }), agi],
+  ];
+  if ((baseData['1098'] || []).length > 0) {
+    result.push(['Mortgage interest', 'added to the first 1098 payment', addMortgageInterest, agi]);
+  }
+  if ((baseData['1099'] || []).some((entry: D) => (entry['Foreign Tax Paid'] || 0) > 0)) {
+    result.push(['Foreign tax paid', 'added to the 1099 that reports foreign tax (Form 1116)',
+      addForeignTax, baseMetrics.federal]);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Running the computation
+
+interface Metrics {
+  federal: number;
+  ny_state: number;
+  nyc: number;
+  agi: number;
+  taxable_income: number;
+  ordinary_taxable: number;
+  medicare_wages: number;
+  net_capital: number;
+  net_long_term: number;
+  net_short_term: number;
+  preferential_income: boolean;
+  schedule_1a: boolean;
+  amti: number;
+  ny_agi: number;
+  ny_taxable: number;
+  federal_agi_ny: number;
+  itemizing: boolean;
+  ny_itemizing: boolean;
+  amt: boolean;
+  foreign_tax_limited: boolean;
+  salt_capped: boolean;
+  niit: boolean;
+  additional_medicare: boolean;
+}
+type NumericMetric = { [K in keyof Metrics]: Metrics[K] extends number ? K : never }[keyof Metrics];
+type FlagMetric = { [K in keyof Metrics]: Metrics[K] extends boolean ? K : never }[keyof Metrics];
+
+function run(baseData: D, config: TaxConfig, change: Change | null, amount: number): Metrics {
+  const data = structuredClone(baseData);
+  if (amount && change) change(data, amount);
+  const { formsState, worksheets, summaryInfo } = fillTaxes(data, config);
+  const f1040 = (formsState[k_1040] as D) || {};
+  const it201 = (formsState[k_it201] as D) || {};
+  const scheduleD = (formsState[k_1040sd] as D) || {};
+  const saltWorksheet = worksheets[w_salt_deduction] ?? new Array(11).fill(0);
   return {
-    agi, taxable_income: taxableIncome, is_itemizing: isItemizing,
-    itemized, net_stcg: netSTCG, net_ltcg: netLTCG, net_capital: netCapital,
-    total_qualified: qualifiedDividends + sdGain,
-    ny_agi: nyAGI, ny_taxable: nyTaxable, medicare_wages: medicareWages,
-    salt_total: saltTotal, salt_deduction: saltDeduction,
-    foreign_tax: foreignTaxCredit, foreign_tax_paid: foreignTaxPaid,
-    foreign_tax_limited: foreignTaxPaid > foreignTaxCredit,
-    mortgage_deduction_ratio: mortgageRatio,
-    ny_mortgage_deduction_ratio: nyMortgageRatio,
-    ny_itemized: fIT196['49'] || 0,
-    charitable_ny: fIT196['19'] || 0,
+    federal: f1040['24'] || 0,
+    ny_state: it201['46'] || 0,
+    nyc: (it201['58'] || 0) - (it201['69'] || 0) - (it201['69a'] || 0),
+    agi: f1040['11'] || 0,
+    taxable_income: f1040['15'] || 0,
+    // ordinary part of taxable income: the regular brackets apply to it when gains/dividends stack on top
+    ordinary_taxable: w_qualified_dividends_and_capital_gains in worksheets
+      ? worksheets[w_qualified_dividends_and_capital_gains][5]
+      : f1040['15'] || 0,
+    medicare_wages: (data['W2'] as D[]).reduce((total, w2) => total + (w2['Medicare_wages'] || 0), 0),
+    net_capital: scheduleD['16'] || 0,
+    net_long_term: scheduleD['15'] || 0,
+    net_short_term: scheduleD['7'] || 0,
+    preferential_income: (f1040['3_a'] || 0) > 0 || ((scheduleD['15'] || 0) > 0 && (scheduleD['16'] || 0) > 0),
+    schedule_1a: k_1040s1a in formsState,
+    amti: (summaryInfo[`${k_6251} 4 Alternative minimum taxable income`] as number) || 0,
+    ny_agi: it201['33'] || 0,
+    ny_taxable: it201['37'] || 0,
+    federal_agi_ny: it201['19'] || 0,
+    itemizing: k_1040sa in formsState,
+    ny_itemizing: k_it196 in formsState,
+    amt: k_6251 in formsState,
+    foreign_tax_limited: Object.keys(summaryInfo).some(key => key.includes('Excess foreign tax')),
+    salt_capped: saltWorksheet[9] > 0 && saltWorksheet[10] >= saltWorksheet[9],
+    niit: k_8960 in formsState,
+    additional_medicare: ((formsState[k_8959] as D)?.['18'] || 0) > 0,
   };
 }
 
-type FedRateType = 'ordinary' | 'preferential' | 'ltcg_or_loss' | 'stcg_or_loss' | '1256';
-type Mode = 'income' | 'deduction' | 'property_tax' | 'foreign_tax_credit' | 'hsa' | 'mortgage';
+/** Tax components as a function of the additional amount, with evaluations cached. */
+class TaxCurve {
+  private cache = new Map<number, Metrics>();
+  private baseData: D;
+  private config: TaxConfig;
+  private change: Change;
 
-function rateAt(
-  additional: number, bl: Baseline, config: TaxConfig,
-  fedRateType: FedRateType, mode: Mode = 'income', isWages = false,
-): Rates {
-  const comp = computation_2025;
-  const compNY = computation_2025_ny;
-  const compNYC = computation_2025_nyc;
-
-  if (mode === 'foreign_tax_credit') {
-    if (bl.foreign_tax_limited) return { federal: 0, ny_state: 0, nyc: 0, combined: 0 };
-    return { federal: -1.0, ny_state: 0, nyc: 0, combined: -1.0 };
+  constructor(baseData: D, config: TaxConfig, change: Change) {
+    this.baseData = baseData;
+    this.config = config;
+    this.change = change;
   }
 
-  if (mode === 'hsa') {
-    const dSalt = saltDAgi(bl.agi - additional, config);
-    const dFedTaxable = bl.is_itemizing ? 1 - dSalt : 1;
-    const fedTaxable = bl.taxable_income - additional * dFedTaxable;
-    const fedRate = bracketRate(comp, fedTaxable) * dFedTaxable;
-    const nyRate = bracketRate(compNY, bl.ny_taxable - additional);
-    const nycRate = bracketRate(compNYC, bl.ny_taxable - additional);
-    const federal = r6(-fedRate);
-    const ny_state = r6(-nyRate);
-    const nyc = r6(-nycRate);
-    return { federal, ny_state, nyc, combined: r6(federal + ny_state + nyc) };
+  metrics(amount: number): Metrics {
+    const key = Math.max(0, amount);
+    let cached = this.cache.get(key);
+    if (!cached) {
+      cached = run(this.baseData, this.config, this.change, key);
+      this.cache.set(key, cached);
+    }
+    return cached;
   }
 
-  if (mode === 'property_tax') {
-    let effectiveLimit: number;
-    if (bl.agi <= config.salt_phaseout_start) {
-      effectiveLimit = config.salt_limit;
-    } else {
-      effectiveLimit = Math.max(config.salt_floor,
-        config.salt_limit - config.salt_phaseout_rate * (bl.agi - config.salt_phaseout_start));
-    }
-    let fedRate = 0;
-    if (bl.salt_total + additional <= effectiveLimit && bl.is_itemizing) {
-      fedRate = bracketRate(comp, bl.taxable_income - additional);
-    }
-    let nyRate = 0, nycRate = 0;
-    if (bl.ny_agi <= 1_000_000) {
-      const newNYItemized = bl.ny_itemized + additional;
-      if (newNYItemized > config.ny_standard_deduction) {
-        nyRate = bracketRate(compNY, bl.ny_agi - newNYItemized);
-        nycRate = bracketRate(compNYC, bl.ny_agi - newNYItemized);
-      }
-    }
-    const federal = r6(-fedRate);
-    const ny_state = r6(-nyRate);
-    const nyc = r6(-nycRate);
-    return { federal, ny_state, nyc, combined: r6(federal + ny_state + nyc) };
+  tax(amount: number): Taxes {
+    const metrics = this.metrics(amount);
+    return [metrics.federal, metrics.ny_state, metrics.nyc];
   }
 
-  if (mode === 'mortgage') {
-    const ratio = bl.mortgage_deduction_ratio;
-    const deductible = additional * ratio;
-    const fedTaxable = bl.taxable_income - deductible;
-    let fedRate = 0;
-    if (!bl.is_itemizing) {
-      if (bl.itemized + deductible > config.standard_deduction) {
-        fedRate = bracketRate(comp, fedTaxable);
-      }
-    } else {
-      fedRate = bracketRate(comp, fedTaxable);
-    }
-    const nyRatio = bl.ny_mortgage_deduction_ratio;
-    let nyRate = 0, nycRate = 0;
-    if (nyRatio > 0 && bl.ny_agi <= 1_000_000) {
-      const newNYItemized = bl.ny_itemized + additional * nyRatio;
-      if (newNYItemized > config.ny_standard_deduction) {
-        nyRate = bracketRate(compNY, bl.ny_agi - newNYItemized) * nyRatio;
-        nycRate = bracketRate(compNYC, bl.ny_agi - newNYItemized) * nyRatio;
-      }
-    }
-    const federal = r6(-fedRate * ratio);
-    const ny_state = r6(-nyRate);
-    const nyc = r6(-nycRate);
-    return { federal, ny_state, nyc, combined: r6(federal + ny_state + nyc) };
+  slope(start: number, end: number): Taxes {
+    const before = this.tax(start);
+    const after = this.tax(end);
+    return [0, 1, 2].map(index => (after[index] - before[index]) / (end - start)) as Taxes;
   }
-
-  if (mode === 'deduction') {
-    const fedTaxable = bl.taxable_income - additional;
-    let fedRate = 0;
-    if (!bl.is_itemizing) {
-      if (bl.itemized + additional > config.standard_deduction) {
-        fedRate = bracketRate(comp, fedTaxable);
-      }
-    } else {
-      fedRate = bracketRate(comp, fedTaxable);
-    }
-    let nyRate = 0, nycRate = 0;
-    if (bl.ny_agi > 1_000_000) {
-      const fraction = bl.ny_agi > 10_000_000 ? 0.25 : 0.50;
-      const newNYItemized = (bl.charitable_ny + additional) * fraction;
-      if (newNYItemized > config.ny_standard_deduction) {
-        nyRate = bracketRate(compNY, bl.ny_agi - newNYItemized) * fraction;
-        nycRate = bracketRate(compNYC, bl.ny_agi - newNYItemized) * fraction;
-      }
-    } else {
-      const newNYItemized = bl.ny_itemized + additional;
-      if (newNYItemized > config.ny_standard_deduction) {
-        nyRate = bracketRate(compNY, bl.ny_agi - newNYItemized);
-        nycRate = bracketRate(compNYC, bl.ny_agi - newNYItemized);
-      }
-    }
-    const federal = r6(-fedRate);
-    const ny_state = r6(-nyRate);
-    const nyc = r6(-nycRate);
-    return { federal, ny_state, nyc, combined: r6(federal + ny_state + nyc) };
-  }
-
-  // Income mode
-  const newAgi = bl.agi + additional;
-  const dSalt = saltDAgi(newAgi, config);
-  const dFed = bl.is_itemizing ? 1 - dSalt : 1;
-  const fedTaxable = bl.taxable_income + additional * dFed;
-
-  let fedRate: number;
-  if (fedRateType === 'ordinary') {
-    fedRate = bracketRate(comp, fedTaxable) * dFed;
-  } else if (fedRateType === 'preferential') {
-    let pref: number;
-    if (fedTaxable <= config.qualified_div_0pct) pref = 0;
-    else if (fedTaxable <= config.qualified_div_20pct) pref = 0.15;
-    else pref = 0.20;
-    fedRate = pref * dFed;
-  } else if (fedRateType === 'ltcg_or_loss') {
-    if (bl.net_ltcg + additional < 0 || bl.net_capital + additional < 0) {
-      fedRate = bracketRate(comp, fedTaxable) * dFed;
-    } else {
-      let pref: number;
-      if (fedTaxable <= config.qualified_div_0pct) pref = 0;
-      else if (fedTaxable <= config.qualified_div_20pct) pref = 0.15;
-      else pref = 0.20;
-      fedRate = pref * dFed;
-    }
-  } else if (fedRateType === 'stcg_or_loss') {
-    if (bl.net_capital < -3000 && bl.net_capital + additional < -3000) {
-      fedRate = 0;
-    } else {
-      fedRate = bracketRate(comp, fedTaxable) * dFed;
-    }
-  } else {
-    // 1256
-    const ordinary = bracketRate(comp, fedTaxable);
-    let pref: number;
-    if (bl.net_ltcg < 0 || bl.net_capital < 0) {
-      pref = ordinary;
-    } else {
-      if (fedTaxable <= config.qualified_div_0pct) pref = 0;
-      else if (fedTaxable <= config.qualified_div_20pct) pref = 0.15;
-      else pref = 0.20;
-    }
-    fedRate = (0.60 * pref + 0.40 * ordinary) * dFed;
-  }
-
-  let extraFed = 0;
-  if (isWages && bl.medicare_wages + additional > 200_000) extraFed = 0.009;
-  if (!isWages && newAgi > (config.niit_threshold)) extraFed += 0.038;
-
-  const newNYTaxable = bl.ny_taxable + additional;
-  const nyRate = bracketRate(compNY, newNYTaxable);
-  const nycRate = bracketRate(compNYC, newNYTaxable);
-
-  const federal = r6(fedRate + extraFed);
-  const ny_state = r6(nyRate);
-  const nyc = r6(nycRate);
-  return { federal, ny_state, nyc, combined: r6(federal + ny_state + nyc) };
 }
 
-function r6(x: number): number { return Math.round(x * 1_000_000) / 1_000_000; }
+const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
-function findKnotsIncome(bl: Baseline, config: TaxConfig, isWages: boolean): [number, string][] {
-  const knots: [number, string][] = [];
-  const dSalt = saltDAgi(bl.agi, config);
-  const dFed = bl.is_itemizing ? 1 - dSalt : 1;
-
-  if (bl.agi < config.salt_phaseout_start) {
-    knots.push([config.salt_phaseout_start - bl.agi, 'SALT phaseout begins']);
-    knots.push([saltAgiAtFloor(config) - bl.agi, 'SALT hits floor']);
-  } else if (bl.agi < saltAgiAtFloor(config)) {
-    knots.push([saltAgiAtFloor(config) - bl.agi, 'SALT hits floor']);
-  }
-
-  for (const bracket of FED_BRACKETS) {
-    if (bracket > bl.taxable_income) {
-      knots.push([(bracket - bl.taxable_income) / dFed, `Federal bracket at taxable $${bracket.toLocaleString()}`]);
-    }
-  }
-  for (const key of ['qualified_div_0pct', 'qualified_div_20pct'] as const) {
-    const bracket = config[key];
-    if (bracket > bl.taxable_income) {
-      knots.push([(bracket - bl.taxable_income) / dFed, `Preferential rate at taxable $${bracket.toLocaleString()}`]);
-    }
-  }
-
-  if (isWages && bl.medicare_wages < 200_000) {
-    knots.push([200_000 - bl.medicare_wages, 'Additional Medicare Tax begins ($200k)']);
-  }
-  if (!isWages && bl.agi < config.niit_threshold) {
-    knots.push([config.niit_threshold - bl.agi, `NIIT begins (MAGI > $${config.niit_threshold.toLocaleString()})`]);
-  }
-
-  if (bl.ny_agi <= 1_000_000) knots.push([1_000_000 - bl.ny_agi, 'NYAGI crosses $1M']);
-  if (bl.ny_agi <= 10_000_000 && bl.charitable_ny > 0) {
-    knots.push([10_000_000 - bl.ny_agi, 'NYAGI crosses $10M (cliff)']);
-  }
-
-  for (const bracket of NY_BRACKETS) {
-    if (bracket > bl.ny_taxable) knots.push([bracket - bl.ny_taxable, `NY bracket at taxable $${bracket.toLocaleString()}`]);
-  }
-  for (const bracket of NYC_BRACKETS) {
-    if (bracket > bl.ny_taxable) knots.push([bracket - bl.ny_taxable, `NYC bracket at taxable $${bracket.toLocaleString()}`]);
-  }
-  for (const bracket of NY_RECAPTURE_BRACKETS) {
-    if (bracket > bl.ny_taxable) knots.push([bracket - bl.ny_taxable, `NY recapture cliff at $${bracket.toLocaleString()}`]);
-  }
-
-  return dedup(knots);
+function differs(slopeA: Taxes, slopeB: Taxes): boolean {
+  return Math.max(...slopeA.map((first, index) => Math.abs(first - slopeB[index]))) > SLOPE_TOLERANCE;
 }
 
-function findKnotsCharitable(bl: Baseline, config: TaxConfig): [number, string][] {
-  const knots: [number, string][] = [];
-  for (const bracket of [...FED_BRACKETS].reverse()) {
-    if (bracket < bl.taxable_income) knots.push([bl.taxable_income - bracket, `Federal bracket at taxable $${bracket.toLocaleString()}`]);
+/** Resolve a small interval holding one rate change into [knot, jump]. The left and right lines are
+ * measured just outside the interval and intersected; if they don't meet inside it, the change is a
+ * jump (cliff), located to the dollar by bisection. */
+function locate(curve: TaxCurve, start: number, end: number): [number, number] {
+  const left = start > 0 ? curve.slope(Math.max(0, start - SLOPE_STEP), start) : curve.slope(start, start + 1);
+  const right = curve.slope(end, end + SLOPE_STEP);
+  // use the component whose slope changes the most
+  let index = 0;
+  for (const each of [1, 2]) {
+    if (Math.abs(left[each] - right[each]) > Math.abs(left[index] - right[index])) index = each;
   }
-  if (bl.ny_agi > 1_000_000) {
-    const fraction = bl.ny_agi > 10_000_000 ? 0.25 : 0.50;
-    const currentNYItemized = bl.charitable_ny * fraction;
-    if (currentNYItemized <= config.ny_standard_deduction) {
-      const needed = config.ny_standard_deduction / fraction - bl.charitable_ny;
-      if (needed > 0) knots.push([needed, `NY itemized exceeds NY standard deduction`]);
-    }
-    for (const bracket of [...NY_BRACKETS].reverse()) {
-      if (bracket < bl.ny_agi) {
-        const add = (bl.ny_agi - bracket) / fraction - bl.charitable_ny;
-        if (add > 0) knots.push([add, `NY bracket at taxable $${bracket.toLocaleString()}`]);
-      }
-    }
-  } else if (bl.ny_itemized > config.ny_standard_deduction) {
-    for (const bracket of [...NY_BRACKETS].reverse()) {
-      if (bracket < bl.ny_agi - bl.ny_itemized) {
-        const add = bl.ny_agi - bl.ny_itemized - bracket;
-        if (add > 0) knots.push([add, `NY bracket at taxable $${bracket.toLocaleString()}`]);
-      }
+  const taxStart = curve.tax(start)[index];
+  const taxEnd = curve.tax(end)[index];
+  if (Math.abs(left[index] - right[index]) > SLOPE_TOLERANCE) {
+    const knot = (taxEnd - taxStart + left[index] * start - right[index] * end) / (left[index] - right[index]);
+    if (start <= knot && knot <= end) {
+      // a kink: the tax at the intersection lies on both lines (a jump would leave a gap)
+      const onLeftLine = taxStart + left[index] * (knot - start);
+      if (Math.abs(curve.tax(knot)[index] - onLeftLine) < 0.5) return [bankersRound(knot), 0];
     }
   }
-  return dedup(knots);
-}
-
-function findKnotsHSA(bl: Baseline, config: TaxConfig): [number, string][] {
-  const knots: [number, string][] = [];
-  for (const bracket of [...FED_BRACKETS].reverse()) {
-    if (bracket < bl.taxable_income) knots.push([bl.taxable_income - bracket, `Federal bracket at taxable $${bracket.toLocaleString()}`]);
-  }
-  for (const bracket of [...NY_BRACKETS].reverse()) {
-    if (bracket < bl.ny_taxable) knots.push([bl.ny_taxable - bracket, `NY bracket at taxable $${bracket.toLocaleString()}`]);
-  }
-  const hsaMax = config.hsa_max_contribution;
-  if (hsaMax > 0) {
-    const filtered = knots.filter(([x]) => x < hsaMax);
-    filtered.push([hsaMax, `HSA max contribution $${hsaMax.toLocaleString()}`]);
-    return dedup(filtered);
-  }
-  return dedup(knots);
-}
-
-function findKnotsMortgage(bl: Baseline, _config: TaxConfig): [number, string][] {
-  const knots: [number, string][] = [];
-  const ratio = bl.mortgage_deduction_ratio;
-  if (ratio <= 0) return knots;
-  for (const bracket of [...FED_BRACKETS].reverse()) {
-    if (bracket < bl.taxable_income) {
-      knots.push([Math.round((bl.taxable_income - bracket) / ratio), `Federal bracket at taxable $${bracket.toLocaleString()}`]);
-    }
-  }
-  return dedup(knots);
-}
-
-function findKnotsPropertyTax(bl: Baseline, config: TaxConfig): [number, string][] {
-  const knots: [number, string][] = [];
-  let effectiveLimit: number;
-  if (bl.agi <= config.salt_phaseout_start) {
-    effectiveLimit = config.salt_limit;
-  } else {
-    effectiveLimit = Math.max(config.salt_floor,
-      config.salt_limit - config.salt_phaseout_rate * (bl.agi - config.salt_phaseout_start));
-  }
-  if (bl.salt_total < effectiveLimit) {
-    const headroom = effectiveLimit - bl.salt_total;
-    knots.push([Math.round(headroom), `SALT total reaches effective limit $${effectiveLimit.toLocaleString()}`]);
-  }
-  return dedup(knots);
-}
-
-function dedup(knots: [number, string][]): [number, string][] {
-  const filtered = knots.filter(([x]) => x > 0).map(([x, d]) => [Math.round(x), d] as [number, string]);
-  filtered.sort((a, b) => a[0] - b[0]);
-  const collapsed: [number, string][] = [];
-  for (const [dollar, desc] of filtered) {
-    if (collapsed.length > 0 && collapsed[collapsed.length - 1][0] === dollar) {
-      collapsed[collapsed.length - 1] = [dollar, collapsed[collapsed.length - 1][1] + '; ' + desc];
+  // jump: find where the tax leaves the left line
+  const totalLeft = sum(left);
+  const baseTotal = sum(curve.tax(start));
+  const jump = sum(curve.tax(end)) - baseTotal - totalLeft * (end - start);
+  let low = start;
+  let high = end;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (Math.abs(sum(curve.tax(middle)) - baseTotal - totalLeft * (middle - start)) > Math.abs(jump) / 2) {
+      high = middle;
     } else {
-      collapsed.push([dollar, desc]);
+      low = middle;
     }
   }
-  return collapsed;
+  return [high, bankersRound(jump)];
 }
 
-function buildSegments(
-  knots: [number, string][], bl: Baseline, config: TaxConfig,
-  fedRateType: FedRateType, mode: Mode = 'income', isWages = false,
-): Segment[] {
-  const segments: Segment[] = [];
-  const boundaries = [0, ...knots.map(([x]) => x)];
-  for (let idx = 0; idx < boundaries.length; idx++) {
-    const start = boundaries[idx];
-    const end = idx + 1 < boundaries.length ? boundaries[idx + 1] : null;
-    const description = idx < knots.length ? knots[idx][1] : undefined;
-
-    let evalPoint = start + 1;
-    if (mode === 'deduction' && bl.ny_agi > 1_000_000) {
-      const fraction = bl.ny_agi > 10_000_000 ? 0.25 : 0.50;
-      evalPoint = start + Math.ceil(1 / fraction) + 1;
-    }
-
-    const rates = rateAt(evalPoint, bl, config, fedRateType, mode, isWages);
-    const segment: Segment = { from: start, to: end, rates };
-    if (description) segment.next_knot = description;
-    segments.push(segment);
+/** Split [start, end] into knots: returns a list of [knot, jump]. */
+function pieces(curve: TaxCurve, start: number, end: number): [number, number][] {
+  const rightOfStart = curve.slope(start, start + SLOPE_STEP);
+  const leftOfEnd = curve.slope(end - SLOPE_STEP, end);
+  const secant = curve.slope(start, end);
+  if (!differs(rightOfStart, leftOfEnd) && !differs(rightOfStart, secant)) return [];
+  if (end - start <= LOCATE_WIDTH) return [locate(curve, start, end)];
+  const middle = Math.floor((start + end) / 2);
+  const knots = [...pieces(curve, start, middle), ...pieces(curve, middle, end)];
+  // a rate change exactly at the midpoint is invisible to both halves
+  if (differs(curve.slope(middle - SLOPE_STEP, middle), curve.slope(middle, middle + SLOPE_STEP))
+    && !knots.some(([knot]) => Math.abs(knot - middle) <= LOCATE_WIDTH)) {
+    knots.push(locate(curve, middle - SLOPE_STEP, middle + SLOPE_STEP));
   }
-  return segments;
+  return knots.sort((first, second) => first[0] - second[0] || first[1] - second[1]);
 }
 
-export function computeMarginalRates(result: FillTaxesResult, baseData: D): MarginalRatesResult {
-  const config = CONFIG_2025;
-  const bl = extractBaseline(result, baseData);
+function findKnots(curve: TaxCurve, horizon: number): [number, number][] {
+  const points = [0];
+  while (points[points.length - 1] * 2 + 1_000 < horizon) points.push(points[points.length - 1] * 2 + 1_000);
+  points.push(horizon);
+  const knots: [number, number][] = [];
+  for (let position = 0; position + 1 < points.length; position++) {
+    const start = points[position];
+    const end = points[position + 1];
+    knots.push(...pieces(curve, start, end));
+    // rate change at a partition point
+    if (end < horizon && differs(curve.slope(end - SLOPE_STEP, end), curve.slope(end, end + SLOPE_STEP))) {
+      knots.push(locate(curve, end - SLOPE_STEP, end + SLOPE_STEP));
+    }
+  }
+  knots.sort((first, second) => first[0] - second[0] || first[1] - second[1]);
+  const unique = new Map<number, number>();
+  for (const [knot, jump] of knots) {
+    if (![...unique.keys()].some(existing => Math.abs(knot - existing) <= 2)) unique.set(knot, jump);
+  }
+  return [...unique.entries()].sort((first, second) => first[0] - second[0]);
+}
 
-  const incomeKnots = findKnotsIncome(bl, config, false);
-  const wagesKnots = findKnotsIncome(bl, config, true);
-  const charitableKnots = findKnotsCharitable(bl, config);
-  const hsaKnots = findKnotsHSA(bl, config);
-  const mortgageKnots = findKnotsMortgage(bl, config);
-  const propertyTaxKnots = findKnotsPropertyTax(bl, config);
+// ---------------------------------------------------------------------------------------------------------
+// Labels
 
-  const stcgInLoss = bl.net_stcg < 0;
-  const ltcgInLoss = bl.net_ltcg < 0 || bl.net_capital < 0;
+type Threshold = [metric: NumericMetric, threshold: number, label: string, condition: FlagMetric | null];
 
-  const categories: Record<string, Category> = {
-    'W2 Wages': {
-      note: 'Ordinary income + 0.9% Additional Medicare Tax (wages > $200k)',
-      segments: buildSegments(wagesKnots, bl, config, 'ordinary', 'income', true),
-    },
-    'Short-term capital gain': {
-      note: 'Taxed as ordinary income + 3.8% NIIT' + (stcgInLoss ? '; net STCG in loss' : ''),
-      segments: buildSegments(incomeKnots, bl, config, stcgInLoss ? 'stcg_or_loss' : 'ordinary'),
-    },
-    'Long-term capital gain': {
-      note: ltcgInLoss
-        ? 'Net losses absorb gain — taxed at ordinary rates + 3.8% NIIT'
-        : 'Preferential rate + 3.8% NIIT',
-      segments: buildSegments(incomeKnots, bl, config, ltcgInLoss ? 'ltcg_or_loss' : 'preferential'),
-    },
-    'Qualified dividends': {
-      note: 'Preferential rate + 3.8% NIIT',
-      segments: buildSegments(incomeKnots, bl, config, 'preferential'),
-    },
-    'Interest income': {
-      note: 'Taxed as ordinary income + 3.8% NIIT',
-      segments: buildSegments(incomeKnots, bl, config, 'ordinary'),
-    },
-    '1256 contracts': {
-      note: '60/40 split: 60% LTCG + 40% ordinary + 3.8% NIIT',
-      segments: buildSegments(incomeKnots, bl, config, '1256'),
-    },
-    'HSA contribution': {
-      note: `Above-the-line deduction, reduces AGI (max $${config.hsa_max_contribution.toLocaleString()})`,
-      segments: buildSegments(hsaKnots, bl, config, 'ordinary', 'hsa').filter(s => s.from < config.hsa_max_contribution),
-    },
-    'Charitable contributions': {
-      note: bl.ny_agi > 1_000_000
-        ? 'Itemized deduction. NY: limited to 50% of charitable (NYAGI > $1M)'
-        : 'Itemized deduction, $1-for-$1',
-      segments: buildSegments(charitableKnots, bl, config, 'ordinary', 'deduction'),
-    },
-    'Mortgage interest': {
-      note: `Federal ratio ${(bl.mortgage_deduction_ratio * 100).toFixed(1)}%, NY ratio ${(bl.ny_mortgage_deduction_ratio * 100).toFixed(1)}%`,
-      segments: buildSegments(mortgageKnots, bl, config, 'ordinary', 'mortgage'),
-    },
-    'Property tax': {
-      note: bl.salt_total >= bl.salt_deduction ? 'SALT capped — no federal marginal benefit' : 'Feeds into SALT deduction',
-      segments: buildSegments(propertyTaxKnots, bl, config, 'ordinary', 'property_tax'),
-    },
-    'Foreign tax credit': {
-      note: bl.foreign_tax_limited
-        ? `At Form 1116 limit — no marginal benefit (carries forward)`
-        : 'Dollar-for-dollar credit against federal tax',
-      segments: buildSegments([], bl, config, 'ordinary', 'foreign_tax_credit'),
-    },
-  };
+/** Checked on both sides of each knot. A label is only used when its condition (a boolean metric) holds on
+ * either side, so e.g. SALT thresholds don't label knots of a return that takes the standard deduction. */
+function thresholds(config: TaxConfig): Threshold[] {
+  const result: Threshold[] = config.fed_brackets.map(bracket =>
+    ['ordinary_taxable', bracket, `Federal bracket at ordinary taxable income $${formatDollars(bracket)}`, null]);
+  const zeroBand = config.qualified_div_0pct;
+  const twentyBand = config.qualified_div_20pct;
+  result.push(
+    ['taxable_income', 0, 'Federal taxable income reaches zero', null],
+    ['ny_taxable', 0, 'NY taxable income reaches zero', null],
+    ['taxable_income', zeroBand, `0% -> 15% capital gain rate at taxable $${formatDollars(zeroBand)}`, 'preferential_income'],
+    ['taxable_income', twentyBand, `15% -> 20% capital gain rate at taxable $${formatDollars(twentyBand)}`, 'preferential_income'],
+    ['ordinary_taxable', 0, 'Ordinary taxable income reaches zero', 'preferential_income'],
+    ['ordinary_taxable', zeroBand, `Gains start to fill the 0% band (ordinary taxable $${formatDollars(zeroBand)})`, 'preferential_income'],
+    ['ordinary_taxable', twentyBand, `Gains start to fill the 15% band (ordinary taxable $${formatDollars(twentyBand)})`, 'preferential_income'],
+    ['agi', config.salt_phaseout_start,
+      `SALT cap phaseout begins (AGI $${formatDollars(config.salt_phaseout_start)})`, 'itemizing'],
+    ['net_capital', 0, 'Net capital gain/loss crosses zero', null],
+    ['net_long_term', 0, 'Net long-term gain/loss crosses zero', null],
+    ['net_short_term', 0, 'Net short-term gain/loss crosses zero', null],
+    ['net_capital', -config.capital_loss_limit, `Capital loss limit ($${formatDollars(config.capital_loss_limit)})`, null],
+    ['amti', config.should_fill_6251_phaseout,
+      `AMT exemption phaseout begins (AMTI $${formatDollars(config.should_fill_6251_phaseout)})`, 'amt'],
+    ['ny_agi', config.ny_itemized_adjustment_start,
+      `NY itemized deduction adjustment begins (NYAGI $${formatDollars(config.ny_itemized_adjustment_start)})`, 'ny_itemizing'],
+    ['ny_agi', 475_000, 'NY itemized deduction adjustment worksheet 4 (NYAGI $475,000)', 'ny_itemizing'],
+    ['ny_agi', 525_000, 'NY itemized deduction adjustment reaches 50% (NYAGI $525,000)', 'ny_itemizing'],
+    ['ny_agi', 1_000_000, 'NY itemized deduction limited to 50% of charitable gifts (NYAGI $1M)', 'ny_itemizing'],
+    ['ny_agi', 10_000_000, 'NY itemized deduction limited to 25% of charitable gifts (NYAGI $10M)', 'ny_itemizing'],
+    ['ny_agi', 107_650, 'NY tax recapture begins (NYAGI $107,650)', null],
+    ['ny_agi', 157_650, 'NY tax recapture of the lower brackets complete (NYAGI $157,650)', null],
+    ['federal_agi_ny', 250_000, 'NYC fixed school credit ends (income $250,000)', null],
+    ['federal_agi_ny', 500_000, 'NYC school rate reduction ends (income $500,000)', null],
+  );
+  const saltFloorAgi = config.salt_phaseout_start
+    + (config.salt_limit - config.salt_floor) / config.salt_phaseout_rate;
+  if (saltFloorAgi > config.salt_phaseout_start) {
+    result.push(['agi', saltFloorAgi,
+      `SALT cap reaches the $${formatDollars(config.salt_floor)} floor (AGI $${formatDollars(saltFloorAgi)})`, 'itemizing']);
+  }
+  const amtExemptionGone = config.should_fill_6251_phaseout + config.amt_exemption / (config.amt_phaseout_rate ?? 0.25);
+  result.push(['amti', amtExemptionGone, `AMT exemption fully phased out (AMTI $${formatDollars(amtExemptionGone)})`, 'amt']);
+  for (const bracket of config.ny_brackets) {
+    result.push(['ny_taxable', bracket, `NY bracket at taxable $${formatDollars(bracket)}`, null]);
+  }
+  for (const bracket of config.ny_recapture_brackets) {
+    result.push(['ny_agi', bracket, `NY recapture phase-in begins (NYAGI $${formatDollars(bracket)})`, null]);
+    result.push(['ny_agi', bracket + 50_000, `NY recapture phase-in ends (NYAGI $${formatDollars(bracket + 50_000)})`, null]);
+  }
+  for (const bracket of config.nyc_brackets) {
+    result.push(['ny_taxable', bracket, `NYC bracket at taxable $${formatDollars(bracket)}`, null]);
+  }
+  if (config.itemized_limitation_rate) {
+    result.push(['agi', config.fed_brackets[config.fed_brackets.length - 1], 'IRC 68 itemized deduction limitation begins', 'itemizing']);
+  }
+  if (config.schedule_1a) {
+    result.push(
+      ['agi', config.tips_overtime_phaseout_start, 'Schedule 1-A tips/overtime phaseout begins', 'schedule_1a'],
+      ['agi', config.car_loan_phaseout_start, 'Schedule 1-A car loan interest phaseout begins', 'schedule_1a'],
+      ['agi', config.senior_phaseout_start, 'Schedule 1-A senior deduction phaseout begins', 'schedule_1a'],
+    );
+  }
+  return result;
+}
 
+const FLAG_LABELS: [FlagMetric, string, string][] = [
+  ['itemizing', 'switches to itemized deductions', 'switches to the standard deduction'],
+  ['ny_itemizing', 'NY switches to itemized deductions', 'NY switches to the standard deduction'],
+  ['amt', 'AMT starts to apply', 'AMT stops applying'],
+  ['foreign_tax_limited', 'foreign tax credit reaches the Form 1116 limit', 'foreign tax credit below the Form 1116 limit'],
+  ['salt_capped', 'SALT deduction reaches its cap', 'SALT deduction below its cap'],
+  ['niit', 'NIIT starts to apply', 'NIIT stops applying'],
+  ['additional_medicare', 'Additional Medicare Tax starts to apply', 'Additional Medicare Tax stops applying'],
+];
+
+function label(curve: TaxCurve, knot: number, jump: number, allThresholds: Threshold[]): string {
+  const before = curve.metrics(knot - LABEL_OFFSET);
+  const after = curve.metrics(knot + LABEL_OFFSET);
+  const labels = allThresholds
+    .filter(([metric, threshold, , condition]) =>
+      Math.min(before[metric], after[metric]) <= threshold && threshold < Math.max(before[metric], after[metric])
+      && (condition === null || before[condition] || after[condition]))
+    .map(([, , text]) => text);
+  for (const [flag, starts, stops] of FLAG_LABELS) {
+    if (before[flag] !== after[flag]) labels.push(after[flag] ? starts : stops);
+  }
+  if (jump) labels.push(`cliff: tax ${jump > 0 ? '+' : '-'}$${formatDollars(Math.abs(jump))}`);
+  return labels.join('; ') || 'rate change';
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Segments
+
+function segmentRates(curve: TaxCurve, start: number, end: number): Rates {
+  const insideStart = start + Math.min(SLOPE_STEP, (end - start) / 4);
+  const insideEnd = end - Math.min(SLOPE_STEP, (end - start) / 4);
+  const [federal, nyState, nyc] = curve.slope(insideStart, insideEnd).map(rate => bankersRound(rate, 6));
+  return { federal, ny_state: nyState, nyc, combined: bankersRound(federal + nyState + nyc, 6) };
+}
+
+function segments(curve: TaxCurve, horizon: number, allThresholds: Threshold[]): Segment[] {
+  if (horizon <= 0) return [];
+  const knots = findKnots(curve, horizon);
+  const bounds = [0, ...knots.map(([knot]) => knot), horizon];
+  const jumps = new Map(knots);
+  const result: Segment[] = [];
+  for (let position = 0; position + 1 < bounds.length; position++) {
+    const start = bounds[position];
+    const end = bounds[position + 1];
+    if (end <= start) continue;
+    const segment: Segment = { from: start, to: end < horizon ? end : null, rates: segmentRates(curve, start, end) };
+    if (end < horizon) segment.next_knot = label(curve, end, jumps.get(end) ?? 0, allThresholds);
+    result.push(segment);
+  }
+  // merge neighbours that show the same rates (sub-0.01% drift, e.g. Form 1116 limitation curvature)
+  const merged: Segment[] = [];
+  for (const segment of result) {
+    const previous = merged[merged.length - 1];
+    if (previous && !jumps.get(segment.from) && COMPONENTS.every(
+      component => bankersRound(previous.rates[component], 4) === bankersRound(segment.rates[component], 4))) {
+      previous.to = segment.to;
+      if (segment.next_knot !== undefined) {
+        previous.next_knot = segment.next_knot;
+      } else {
+        delete previous.next_knot;
+      }
+    } else {
+      merged.push(segment);
+    }
+  }
+  return merged;
+}
+
+export function computeMarginalRates(yearConfig: TaxConfig, baseData: D): MarginalRatesResult {
+  const filingStatus = getFilingStatus(baseData);
+  const config: TaxConfig = { ...yearConfig, exact: true, field_maps: null };
+  const resolved = resolveConfig(config, filingStatus);
+  const allThresholds = thresholds(resolved);
+  const baseMetrics = run(baseData, config, null, 0);
+
+  const marginalRates: MarginalRatesResult['marginal_rates'] = {};
+  for (const [name, note, change, horizon] of categories(baseData, baseMetrics, resolved)) {
+    const curve = new TaxCurve(baseData, config, change);
+    marginalRates[name] = { note, segments: segments(curve, bankersRound(horizon), allThresholds) };
+  }
+
+  const baselineKeys = ['agi', 'taxable_income', 'itemizing', 'amt', 'ny_agi', 'ny_taxable', 'ny_itemizing',
+    'federal', 'ny_state', 'nyc'] as const;
   return {
-    year: '2025',
-    baseline: {
-      agi: bl.agi,
-      taxable_income: bl.taxable_income,
-      is_itemizing: bl.is_itemizing,
-      ny_agi: bl.ny_agi,
-      ny_taxable: bl.ny_taxable,
-      salt_total: bl.salt_total,
-      salt_deduction: bl.salt_deduction,
-    },
-    marginal_rates: categories,
+    year: yearConfig.year,
+    filing_status: filingStatus,
+    method: 'numeric (re-runs the tax computation, exact mode)',
+    baseline: Object.fromEntries(baselineKeys.map(key => [key, baseMetrics[key]])),
+    marginal_rates: marginalRates,
   };
 }

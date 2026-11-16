@@ -10,6 +10,8 @@ import type {
   EstimatedPayment,
   MortgagePayment,
   Trade,
+  Spouse,
+  VehicleLoan,
 } from '../types/input';
 import {
   createDefaultInput,
@@ -18,19 +20,25 @@ import {
   createEmpty1098,
   createEmptyCharitable,
   createEmptyOther,
+  createEmptyVehicleLoan,
+  normalizeInput,
 } from '../types/input';
-import type { TaxSummary } from '../types/output';
 import type { FillTaxesResult } from '../computation/fill_taxes';
 import type { MarginalRatesResult } from '../computation/marginal_rates';
-import { computeTaxes, computeAllWithRates } from '../computation/compute';
+import { computeAllWithRates } from '../computation/compute';
 
 interface TaxStore {
   input: TaxInput;
-  summary: TaxSummary | null;
   fullResult: FillTaxesResult | null;
   marginalRates: MarginalRatesResult | null;
 
   setField: <K extends keyof TaxInput>(key: K, value: TaxInput[K]) => void;
+  updateSpouse: (data: Partial<Spouse>) => void;
+
+  // Schedule 1-A vehicle loans
+  addVehicleLoan: () => void;
+  updateVehicleLoan: (index: number, data: Partial<VehicleLoan>) => void;
+  removeVehicleLoan: (index: number) => void;
 
   // W2
   addW2: () => void;
@@ -81,12 +89,31 @@ export const useTaxStore = create<TaxStore>()(
   persist(
     (set, get) => ({
       input: createDefaultInput(),
-      summary: null,
       fullResult: null,
       marginalRates: null,
 
+      // changing the year or filing status makes the previous results stale
       setField: (key, value) =>
-        set((s) => ({ input: { ...s.input, [key]: value } })),
+        set((s) => ({
+          input: { ...s.input, [key]: value },
+          ...(key === 'year' || key === 'filing_status' ? { fullResult: null, marginalRates: null } : {}),
+        })),
+      updateSpouse: (data) =>
+        set((s) => ({ input: { ...s.input, spouse: { ...s.input.spouse, ...data } } })),
+
+      addVehicleLoan: () =>
+        set((s) => ({ input: { ...s.input, vehicle_loans: [...s.input.vehicle_loans, createEmptyVehicleLoan()] } })),
+      updateVehicleLoan: (index, data) =>
+        set((s) => ({
+          input: {
+            ...s.input,
+            vehicle_loans: s.input.vehicle_loans.map((loan, position) => (position === index ? { ...loan, ...data } : loan)),
+          },
+        })),
+      removeVehicleLoan: (index) =>
+        set((s) => ({
+          input: { ...s.input, vehicle_loans: s.input.vehicle_loans.filter((_, position) => position !== index) },
+        })),
 
       addW2: () =>
         set((s) => ({ input: { ...s.input, W2: [...s.input.W2, createEmptyW2()] } })),
@@ -245,25 +272,27 @@ export const useTaxStore = create<TaxStore>()(
       compute: () => {
         try {
           const { result: fullResult, marginalRates } = computeAllWithRates(get().input);
-          const summary = computeTaxes(get().input);
-          set({ summary, fullResult, marginalRates });
+          set({ fullResult, marginalRates });
         } catch (e) {
           console.error('Tax computation error:', e);
           alert('Computation error: ' + (e instanceof Error ? e.message : String(e)));
         }
       },
 
-      importData: (data) => set({ input: data, summary: null, fullResult: null, marginalRates: null }),
+      importData: (data) => set({ input: normalizeInput(data), fullResult: null, marginalRates: null }),
       exportData: () => get().input,
-      reset: () => set({ input: createDefaultInput(), summary: null, fullResult: null, marginalRates: null }),
+      reset: () => set({ input: createDefaultInput(), fullResult: null, marginalRates: null }),
     }),
     {
       name: 'tax-input-storage',
-      version: 2,
-      migrate: () => ({
-        input: createDefaultInput(),
-        summary: null,
-        fullResult: null,
+      version: 3,
+      // only the input is persisted; results are recomputed on demand
+      partialize: (s) => ({ input: s.input }),
+      // v3 added MFJ / 2026 / Schedule 1-A / HSA fields: keep the user's data, fill in the new fields
+      migrate: (persisted, version) => ({
+        input: version >= 2 && persisted && typeof persisted === 'object' && 'input' in persisted
+          ? normalizeInput((persisted as { input: Partial<TaxInput> }).input)
+          : createDefaultInput(),
       }),
     }
   )

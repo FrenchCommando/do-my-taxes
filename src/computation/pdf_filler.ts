@@ -1,7 +1,8 @@
 // Browser-side PDF filling using pdf-lib
 // Port of taxes1040/pipeline/make_pdf_output.py + utils/forms_utils.py
 
-import { PDFDocument, PDFCheckBox, PDFTextField } from 'pdf-lib';
+import { PDFDocument, PDFCheckBox, PDFTextField, PDFRef } from 'pdf-lib';
+import type { PDFField } from 'pdf-lib';
 import type { FillTaxesResult } from './fill_taxes';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -13,7 +14,7 @@ interface KeyEntry {
   fieldType: string; // '/Tx' or '/Btn'
 }
 
-function parseKeysFile(text: string): Map<string, KeyEntry> {
+export function parseKeysFile(text: string): Map<string, KeyEntry> {
   const map = new Map<string, KeyEntry>();
   for (const line of text.split('\n')) {
     if (!line.trim() || line.startsWith('#')) continue;
@@ -55,53 +56,94 @@ async function fetchBytes(url: string): Promise<ArrayBuffer> {
 
 const BASE = import.meta.env.BASE_URL;
 
+/** .keys annotation column: hex-encoded name, with a '#N' suffix on the N-th widget sharing that name. */
+export function parseAnnotKey(annotName: string): string {
+  const [hex, occurrence] = annotName.split('#');
+  return `${decodeAnnotName(hex)}#${occurrence ?? '1'}`;
+}
+
+interface WidgetSlot {
+  field: PDFField;
+  key: string; // '<short name>#<occurrence>', occurrences counted in page order (like pdfrw)
+}
+
+/** Every widget of every field, keyed like the .keys files: widgets are walked in page / annotation order
+ * and repeats of the same short name get '#2', '#3', ... (taxes1040 utils/forms_utils.py iter_widgets). */
+export function widgetSlots(pdfDoc: PDFDocument, fields: PDFField[]): WidgetSlot[] {
+  const order = new Map<PDFRef, number>();
+  let position = 0;
+  for (const page of pdfDoc.getPages()) {
+    const annots = page.node.Annots();
+    for (let index = 0; index < (annots?.size() ?? 0); index++) {
+      const ref = annots!.get(index);
+      if (ref instanceof PDFRef) order.set(ref, position++);
+    }
+  }
+  const widgets: { field: PDFField; name: string; position: number }[] = [];
+  for (const field of fields) {
+    const fullName = field.getName();
+    // pdf-lib returns XFA paths like "topmostSubform[0].Page1[0].f1_14[0]"; .keys use the last segment
+    const name = fullName.split('.').pop()!;
+    for (const widget of field.acroField.getWidgets()) {
+      const ref = pdfDoc.context.getObjectRef(widget.dict);
+      widgets.push({ field, name, position: ref ? order.get(ref) ?? Infinity : Infinity });
+    }
+  }
+  widgets.sort((first, second) => first.position - second.position);
+  const seen = new Map<string, number>();
+  return widgets.map(({ field, name }) => {
+    const occurrence = (seen.get(name) ?? 0) + 1;
+    seen.set(name, occurrence);
+    return { field, key: `${name}#${occurrence}` };
+  });
+}
+
+function formatText(value: string | boolean | number): string {
+  if (typeof value === 'number') {
+    return value === Math.round(value) ? String(Math.round(value)) : value.toFixed(2);
+  }
+  return String(value);
+}
+
 async function fillOnePdf(
+  formsYear: string,
   formKey: string,
   contents: D,
 ): Promise<Uint8Array | null> {
   // formKey is like 'Federal/f1040' or 'ny/it201_fill_in'
-  const keysUrl = `${BASE}forms/2025/${formKey}.keys`;
-  const pdfUrl = `${BASE}forms/2025/${formKey}.pdf`;
-
-  const keysText = await fetchText(keysUrl);
+  const keysText = await fetchText(`${BASE}forms/${formsYear}/${formKey}.keys`);
   if (!keysText) return null; // no .keys file for this form
 
-  const keyMap = parseKeysFile(keysText);
-
-  // Build a lookup from decoded annot name -> value
+  // annotation key -> value
   const annotToValue = new Map<string, string | boolean | number>();
-  for (const [humanName, entry] of keyMap) {
-    if (humanName in contents) {
-      annotToValue.set(decodeAnnotName(entry.annotName), contents[humanName]);
-    }
+  for (const [humanName, entry] of parseKeysFile(keysText)) {
+    if (humanName in contents) annotToValue.set(parseAnnotKey(entry.annotName), contents[humanName]);
   }
-
   if (annotToValue.size === 0) return null;
 
-  const pdfBytes = await fetchBytes(pdfUrl);
-  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const pdfDoc = await PDFDocument.load(await fetchBytes(`${BASE}forms/${formsYear}/${formKey}.pdf`));
   const pdfForm = pdfDoc.getForm();
 
-  for (const field of pdfForm.getFields()) {
-    const fullName = field.getName();
-    // pdf-lib returns XFA paths like "topmostSubform[0].Page1[0].f1_14[0]"
-    // but .keys files have just the short name like "f1_14[0]"
-    // Match by the last segment
-    const name = fullName.includes('.') ? fullName.split('.').pop()! : fullName;
-    if (!annotToValue.has(name)) continue;
-    const value = annotToValue.get(name)!;
+  // group the targeted widgets by field
+  const fieldValues = new Map<PDFField, { widgetIndex: number; value: string | boolean | number }[]>();
+  const widgetIndex = new Map<PDFField, number>();
+  for (const { field, key } of widgetSlots(pdfDoc, pdfForm.getFields())) {
+    const index = widgetIndex.get(field) ?? 0;
+    widgetIndex.set(field, index + 1);
+    if (!annotToValue.has(key)) continue;
+    if (!fieldValues.has(field)) fieldValues.set(field, []);
+    fieldValues.get(field)!.push({ widgetIndex: index, value: annotToValue.get(key)! });
+  }
 
+  for (const [field, values] of fieldValues) {
     if (field instanceof PDFTextField) {
-      let text: string;
-      if (typeof value === 'number') {
-        text = value === Math.round(value) ? String(Math.round(value)) : value.toFixed(2);
-      } else {
-        text = String(value);
-      }
-      field.setText(text);
+      field.setText(formatText(values[0].value));
     } else if (field instanceof PDFCheckBox) {
-      if (value) {
-        field.check();
+      // the widget is checked through its own on-value, so widgets sharing a field stay independent
+      const checked = values.find(({ value }) => value);
+      const onValue = checked && field.acroField.getWidgets()[checked.widgetIndex].getOnValue();
+      if (onValue) {
+        field.acroField.setValue(onValue);
       } else {
         field.uncheck();
       }
@@ -113,38 +155,17 @@ async function fillOnePdf(
   return pdfDoc.save();
 }
 
-function isItemizingFederal(formsState: D): boolean {
-  const f1040 = (formsState['Federal/f1040'] as D) || {};
-  const fSA = (formsState['Federal/f1040sa'] as D) || {};
-  return f1040['12'] === fSA['17'] && fSA['17'] > 0;
-}
-
-function isItemizingNY(formsState: D): boolean {
-  const fIT201 = (formsState['ny/it201_fill_in'] as D) || {};
-  const fIT196 = (formsState['ny/it196_fill_in'] as D) || {};
-  return fIT201['34'] === fIT196['49'] && fIT196['49'] > 0;
-}
-
+/** Fill and merge every form in formsState. formsYear picks the blank PDFs (public/forms/<year>). */
 export async function generateFilledPdfs(
   result: FillTaxesResult,
+  formsYear: string,
 ): Promise<Uint8Array> {
-  const { formsState } = result;
   const filledPages: Uint8Array[] = [];
-
-  const skipForms = new Set<string>();
-  if (!isItemizingFederal(formsState)) skipForms.add('Federal/f1040sa');
-  if (!isItemizingNY(formsState)) skipForms.add('ny/it196_fill_in');
-
-  for (const [formKey, formData] of Object.entries(formsState)) {
-    if (skipForms.has(formKey)) continue;
-    if (Array.isArray(formData)) {
-      // Multiple pages (e.g. f8949 with many trades)
-      for (const page of formData) {
-        const filled = await fillOnePdf(formKey, page as D);
-        if (filled) filledPages.push(filled);
-      }
-    } else {
-      const filled = await fillOnePdf(formKey, formData as D);
+  // non-itemized returns don't carry Schedule A / IT-196 in formsState (removed by the computation)
+  for (const [formKey, formData] of Object.entries(result.formsState)) {
+    // multiple pages (e.g. f8949 with many trades) are a list
+    for (const page of Array.isArray(formData) ? formData : [formData]) {
+      const filled = await fillOnePdf(formsYear, formKey, page as D);
       if (filled) filledPages.push(filled);
     }
   }
@@ -154,11 +175,8 @@ export async function generateFilledPdfs(
   for (const pageBytes of filledPages) {
     const doc = await PDFDocument.load(pageBytes);
     const pages = await merged.copyPages(doc, doc.getPageIndices());
-    for (const page of pages) {
-      merged.addPage(page);
-    }
+    for (const page of pages) merged.addPage(page);
   }
 
-  const bytes = await merged.save();
-  return new Uint8Array(bytes);
+  return new Uint8Array(await merged.save());
 }

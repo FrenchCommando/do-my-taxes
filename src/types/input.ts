@@ -1,4 +1,7 @@
 // Matches the input.json schema from taxes1040
+import type { FilingStatus, TaxYear } from '../computation/config';
+
+export type W2Owner = 'self' | 'spouse';
 
 export interface W2Entry {
   id: string; // UI-only
@@ -26,6 +29,7 @@ export interface W2Entry {
   State_tax: number;
   Local_tax: number;
   Locality: string;
+  Owner: W2Owner; // MFJ: whose W2 this is (excess social security is figured per person)
 }
 
 export interface Trade {
@@ -87,6 +91,23 @@ export interface CharitableContribution {
   id: string; // UI-only
   Entity: string;
   Amount: number;
+  DonorAdvisedFund: boolean; // 2026 non-itemizer deduction excludes gifts to donor-advised funds
+}
+
+export interface VehicleLoan {
+  VIN: string;
+  Interest: number;
+  DeductedOnBusinessSchedule: number;
+}
+
+export interface Spouse {
+  first_name: string;
+  initial: string;
+  last_name: string;
+  ssn: string;
+  occupation: string;
+  presidential_election: boolean;
+  birth_date: string; // YYYY-MM-DD, for the Schedule 1-A senior deduction
 }
 
 export interface OtherEntry {
@@ -103,7 +124,13 @@ export interface PriorYear {
   schedule_d_loss_deduction: number;
 }
 
+export type HsaCoverage = 'self' | 'family';
+
 export interface TaxInput {
+  year: TaxYear;
+  filing_status: FilingStatus;
+  spouse: Spouse; // used when filing_status is married_filing_jointly
+  birth_date: string; // YYYY-MM-DD, for the Schedule 1-A senior deduction
   W2: W2Entry[];
   '1099': Entry1099[];
   '1098': Entry1098[];
@@ -124,7 +151,48 @@ export interface TaxInput {
   health_savings_account_contributions: number;
   health_savings_account_employer_contributions: number;
   health_savings_account_distributions: number;
+  health_savings_account_coverage: HsaCoverage;
+  // null = all distributions paid qualified medical expenses
+  health_savings_account_qualified_medical_expenses: number | null;
+  health_savings_account_distribution_exception: boolean; // age 65+, disabled, or death
+  health_savings_account_last_month_rule_income: number;
+  health_savings_account_funding_distribution_income: number;
+  health_savings_account_testing_period_exception: boolean; // death or disability
+  // Schedule 1-A (2025-2028)
+  qualified_tips: number;
+  qualified_tips_business: number;
+  qualified_overtime: number;
+  qualified_overtime_1099: number;
+  vehicle_loans: VehicleLoan[];
 }
+
+export function createEmptySpouse(): Spouse {
+  return {
+    first_name: '', initial: '', last_name: '', ssn: '', occupation: '',
+    presidential_election: false, birth_date: '',
+  };
+}
+
+export function createEmptyVehicleLoan(): VehicleLoan {
+  return { VIN: '', Interest: 0, DeductedOnBusinessSchedule: 0 };
+}
+
+export const DEFAULT_OPTIONAL_INPUT = {
+  year: '2025' as TaxYear,
+  filing_status: 'single' as FilingStatus,
+  birth_date: '',
+  health_savings_account_coverage: 'self' as HsaCoverage,
+  health_savings_account_qualified_medical_expenses: null,
+  health_savings_account_distribution_exception: false,
+  health_savings_account_last_month_rule_income: 0,
+  health_savings_account_funding_distribution_income: 0,
+  health_savings_account_testing_period_exception: false,
+  qualified_tips: 0,
+  qualified_tips_business: 0,
+  qualified_overtime: 0,
+  qualified_overtime_1099: 0,
+  vehicle_loans: [] as VehicleLoan[],
+};
 
 export function createEmptyW2(): W2Entry {
   return {
@@ -136,6 +204,7 @@ export function createEmptyW2(): W2Entry {
     Wages: 0, SocialSecurity_wages: 0, Medicare_wages: 0,
     Federal_tax: 0, SocialSecurity_tax: 0, Medicare_tax: 0,
     State: '', State_tax: 0, Local_tax: 0, Locality: '',
+    Owner: 'self',
   };
 }
 
@@ -162,7 +231,7 @@ export function createEmpty1098(): Entry1098 {
 }
 
 export function createEmptyCharitable(): CharitableContribution {
-  return { id: crypto.randomUUID(), Entity: '', Amount: 0 };
+  return { id: crypto.randomUUID(), Entity: '', Amount: 0, DonorAdvisedFund: false };
 }
 
 export function createEmptyOther(): OtherEntry {
@@ -171,6 +240,8 @@ export function createEmptyOther(): OtherEntry {
 
 export function createDefaultInput(): TaxInput {
   return {
+    ...DEFAULT_OPTIONAL_INPUT,
+    spouse: createEmptySpouse(),
     W2: [
       {
         id: crypto.randomUUID(),
@@ -184,6 +255,7 @@ export function createDefaultInput(): TaxInput {
         Wages: 999999.99, SocialSecurity_wages: 176100.0, Medicare_wages: 333333.33,
         Federal_tax: 66666.66, SocialSecurity_tax: 9999.0, Medicare_tax: 9999.99,
         State: 'NY', State_tax: 11111.11, Local_tax: 4444.44, Locality: 'NEW YORK',
+        Owner: 'self',
       },
     ],
     '1099': [
@@ -264,7 +336,7 @@ export function createDefaultInput(): TaxInput {
       ],
     },
     Charitable: [
-      { id: crypto.randomUUID(), Entity: 'Brooklyn Botanic Garden', Amount: 152 },
+      { id: crypto.randomUUID(), Entity: 'Brooklyn Botanic Garden', Amount: 152, DonorAdvisedFund: false },
     ],
     Other: [
       { id: crypto.randomUUID(), PropertyTax: 2500, CoopStateTaxes: 10, DaysInNYC: 365 },
@@ -276,5 +348,23 @@ export function createDefaultInput(): TaxInput {
     health_savings_account_contributions: 0,
     health_savings_account_employer_contributions: 0,
     health_savings_account_distributions: 0,
+  };
+}
+
+/** Fill in fields added after an input was exported / persisted (older JSON files stay importable). */
+export function normalizeInput(raw: Partial<TaxInput>): TaxInput {
+  const base = createDefaultInput();
+  return {
+    ...base,
+    ...DEFAULT_OPTIONAL_INPUT,
+    ...raw,
+    spouse: { ...createEmptySpouse(), ...(raw.spouse ?? {}) },
+    W2: (raw.W2 ?? []).map(w2 => ({ ...createEmptyW2(), ...w2, id: w2.id ?? crypto.randomUUID() })),
+    '1099': (raw['1099'] ?? []).map(entry => ({ ...createEmpty1099(), ...entry, id: entry.id ?? crypto.randomUUID() })),
+    '1098': (raw['1098'] ?? []).map(entry => ({ ...createEmpty1098(), ...entry, id: entry.id ?? crypto.randomUUID() })),
+    Charitable: (raw.Charitable ?? []).map(gift => ({ ...createEmptyCharitable(), ...gift, id: gift.id ?? crypto.randomUUID() })),
+    Other: (raw.Other ?? []).map(other => ({ ...createEmptyOther(), ...other, id: other.id ?? crypto.randomUUID() })),
+    EstimatedIncomeTax: { Federal: [], State: [], ...(raw.EstimatedIncomeTax ?? {}) },
+    vehicle_loans: (raw.vehicle_loans ?? []).map(loan => ({ ...createEmptyVehicleLoan(), ...loan })),
   };
 }

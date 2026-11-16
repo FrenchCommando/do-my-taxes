@@ -1,6 +1,7 @@
 // From computation/form_worksheet_names.py
 export const k_1040 = 'Federal/f1040';
 export const k_1040s1 = 'Federal/f1040s1';
+export const k_1040s1a = 'Federal/f1040s1a';
 export const k_1040s2 = 'Federal/f1040s2';
 export const k_1040s3 = 'Federal/f1040s3';
 export const k_1040sa = 'Federal/f1040sa';
@@ -19,9 +20,9 @@ export const k_it196 = 'ny/it196_fill_in';
 
 // Worksheet keys
 export const w_qualified_dividends_and_capital_gains = 'QualifiedDividendsAndCapitalGains';
-export const w_should_fill_6251 = 'ShouldFill6251';
 export const w_mortgage_interest_deduction = 'MortgageInterestDeduction';
-export const w_salt_deduction = 'SALTDeduction';
+export const w_salt_deduction = 'SALTDeduction';  // Schedule A line 5e
+export const w_itemized_limitation = 'ItemizedDeductionLimitation';  // Schedule A line 17, IRC 68 (2026+)
 export const w_capital_loss_carryover = 'CapitalLossCarryover';
 export const w_ny_line40_itemized_deductions = 'NYLine40ItemizedDeductions';
 export const w_ny_line41_itemized_deductions_subtractions = 'NYLine41ItemizedDeductionsSubtractions';

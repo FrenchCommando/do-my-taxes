@@ -1,15 +1,18 @@
 import {
   Accordion, AccordionSummary, AccordionDetails,
   Typography, Button, TextField, Grid, IconButton, Box,
+  FormControl, InputLabel, Select, MenuItem,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
 import { useTaxStore } from '../store/taxStore';
 import NumberField from './NumberField';
+import type { W2Owner } from '../types/input';
 
 export default function W2Section() {
-  const { W2 } = useTaxStore((s) => s.input);
+  const { W2, filing_status: filingStatus } = useTaxStore((s) => s.input);
+  const marriedFilingJointly = filingStatus === 'married_filing_jointly';
   const { addW2, updateW2, removeW2 } = useTaxStore();
 
   return (
@@ -21,9 +24,18 @@ export default function W2Section() {
       </AccordionSummary>
       <AccordionDetails>
         {W2.map((entry) => (
-          <Box key={entry.id} sx={{ mb: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 1 }}>
+          <Box key={entry.id} sx={{ mb: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 1, opacity: !marriedFilingJointly && entry.Owner === 'spouse' ? 0.5 : 1 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
               <TextField label="Company" size="small" value={entry.Company} onChange={(e) => updateW2(entry.id, { Company: e.target.value })} sx={{ flex: 1, mr: 1 }} />
+              {(marriedFilingJointly || entry.Owner === 'spouse') && (
+                <FormControl size="small" sx={{ minWidth: 110, mr: 1 }}>
+                  <InputLabel>Owner</InputLabel>
+                  <Select value={entry.Owner} label="Owner" onChange={(e) => updateW2(entry.id, { Owner: e.target.value as W2Owner })}>
+                    <MenuItem value="self">You</MenuItem>
+                    <MenuItem value="spouse">Spouse</MenuItem>
+                  </Select>
+                </FormControl>
+              )}
               <IconButton onClick={() => removeW2(entry.id)} color="error" size="small"><DeleteIcon /></IconButton>
             </Box>
             <Grid container spacing={1} sx={{ mb: 1 }}>

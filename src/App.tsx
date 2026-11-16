@@ -21,6 +21,10 @@ import OtherSection from './components/OtherSection';
 import CarryoverSection from './components/CarryoverSection';
 import SummaryPanel from './components/SummaryPanel';
 import MarginalRatesPanel from './components/MarginalRatesPanel';
+import FilingSection from './components/FilingSection';
+import HsaSection from './components/HsaSection';
+import Schedule1aSection from './components/Schedule1aSection';
+import { FILING_STATUS_LABELS, PROVISIONAL_YEARS } from './computation/config';
 
 function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)');
@@ -32,6 +36,10 @@ function App() {
   }), [isDark]);
 
   const { compute, importData, exportData, reset, fullResult, marginalRates } = useTaxStore();
+  const year = useTaxStore((s) => s.input.year);
+  const filingStatus = useTaxStore((s) => s.input.filing_status);
+  // provisional years have no published forms yet (no blank PDFs / .keys)
+  const pdfAvailable = !PROVISIONAL_YEARS.includes(year);
 
   const handleExportJSON = () => {
     const data = exportData();
@@ -39,7 +47,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'tax-input-2025.json';
+    a.download = `tax-input-${year}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -102,12 +110,12 @@ function App() {
   const handleDownloadPdf = async () => {
     if (!fullResult) return;
     try {
-      const pdfBytes = await generateFilledPdfs(fullResult);
+      const pdfBytes = await generateFilledPdfs(fullResult, year);
       const blob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'forms-2025.pdf';
+      a.download = `forms-${year}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -129,13 +137,28 @@ function App() {
     fileInput.click();
   };
 
+  const downloads = (
+    <>
+      <Button variant="contained" color="secondary" onClick={handleDownloadPdf} disabled={!pdfAvailable}>
+        {pdfAvailable ? 'Download PDF Forms' : `PDF forms not available for ${year} yet`}
+      </Button>
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+        <Button variant="outlined" size="small" onClick={handleExportDataJSON}>data.json</Button>
+        <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
+        <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
+        <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
+        <Button variant="outlined" size="small" onClick={handleExportMarginalRatesJSON}>marginal_rates.json</Button>
+      </Stack>
+    </>
+  );
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <AppBar position="static">
         <Toolbar>
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
-            Do My Taxes - 2025 (Single Filer)
+            Do My Taxes - {year} ({FILING_STATUS_LABELS[filingStatus]})
           </Typography>
           <IconButton color="inherit" onClick={() => setDarkMode(!isDark)} sx={{ mr: 1 }}>
             {isDark ? <LightModeIcon /> : <DarkModeIcon />}
@@ -157,7 +180,7 @@ function App() {
           </AccordionSummary>
           <AccordionDetails>
             <Typography variant="body2" color="text.secondary" component="div">
-              1. Fill in your tax info in the sections below (W-2, 1099, etc.). Use <strong>+</strong> to add entries, trash icon to remove.
+              1. Pick the tax year and filing status (single or married filing jointly), then fill in your tax info in the sections below (W-2, 1099, etc.). Use <strong>+</strong> to add entries, trash icon to remove.
               <br />2. Click <strong>Compute Taxes</strong> to run the computation and see your summary.
               <br />3. Download your filled <strong>PDF forms</strong> or <strong>JSON</strong> output.
               <br />
@@ -178,9 +201,12 @@ function App() {
         <Grid container spacing={2}>
           <Grid size={{ xs: 12, lg: 8, xl: 6 }}>
             <Stack spacing={1}>
+              <FilingSection />
               <W2Section />
               <Section1099 />
               <Section1098 />
+              <HsaSection />
+              <Schedule1aSection />
               <EstimatedTaxSection />
               <CharitableSection />
               <OtherSection />
@@ -196,16 +222,7 @@ function App() {
               {fullResult && (
                 <Stack spacing={1} sx={{ mt: 2, display: { xl: 'none' } }}>
                   <MarginalRatesPanel />
-                  <Button variant="contained" color="secondary" onClick={handleDownloadPdf}>
-                    Download PDF Forms
-                  </Button>
-                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-                    <Button variant="outlined" size="small" onClick={handleExportDataJSON}>data.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportMarginalRatesJSON}>marginal_rates.json</Button>
-                  </Stack>
+                  {downloads}
                 </Stack>
               )}
               {!fullResult && (
@@ -220,16 +237,7 @@ function App() {
               <MarginalRatesPanel />
               {fullResult && (
                 <Stack spacing={1} sx={{ mt: 2 }}>
-                  <Button variant="contained" color="secondary" onClick={handleDownloadPdf}>
-                    Download PDF Forms
-                  </Button>
-                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-                    <Button variant="outlined" size="small" onClick={handleExportDataJSON}>data.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportSummaryJSON}>summary.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportWorksheetJSON}>worksheet.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportCarryoverJSON}>carryover.json</Button>
-                    <Button variant="outlined" size="small" onClick={handleExportMarginalRatesJSON}>marginal_rates.json</Button>
-                  </Stack>
+                  {downloads}
                 </Stack>
               )}
             </Box>

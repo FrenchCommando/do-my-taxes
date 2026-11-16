@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeAllWithRates } from './compute';
-import { createDefaultInput } from '../types/input';
+import { FILING_STATUSES, TAX_YEARS } from './config';
+import { createDefaultInput, normalizeInput } from '../types/input';
 import type { TaxInput } from '../types/input';
 
 function noNaN(obj: unknown, path = ''): void {
@@ -21,36 +22,42 @@ function noNaN(obj: unknown, path = ''): void {
 }
 
 function emptyInput(): TaxInput {
-  return {
-    W2: [],
-    '1099': [],
-    '1098': [],
-    EstimatedIncomeTax: { Federal: [], State: [] },
-    Charitable: [],
-    Other: [],
-    occupation: '',
-    phone: '',
-    email: '',
-    routing_number: '',
-    checking: false,
-    account_number: '',
-    prior_year: null,
-    health_savings_account: false,
-    health_savings_account_contributions: 0,
-    health_savings_account_employer_contributions: 0,
-    health_savings_account_distributions: 0,
-  };
+  return normalizeInput({ occupation: '', phone: '', email: '', routing_number: '', checking: false, account_number: '' });
 }
 
 describe('compute taxes', () => {
-  it('default sample input produces no NaN', () => {
+  for (const year of TAX_YEARS) {
+    for (const filingStatus of FILING_STATUSES) {
+      it(`default sample input produces no NaN (${year}, ${filingStatus})`, () => {
+        const input = { ...createDefaultInput(), year, filing_status: filingStatus };
+        const { result, marginalRates } = computeAllWithRates(input);
+        expect(result.summaryInfo['Federal/f1040 Filing status']).toBe(filingStatus);
+        noNaN(result.formsState, 'formsState');
+        noNaN(result.summaryInfo, 'summaryInfo');
+        noNaN(result.worksheets, 'worksheets');
+        noNaN(result.carryover, 'carryover');
+        noNaN(marginalRates, 'marginalRates');
+      });
+    }
+  }
+
+  it('1256 contracts without trades: only the 60% long-term part gets the capital gain rates', () => {
     const input = createDefaultInput();
-    const { result, marginalRates } = computeAllWithRates(input);
-    noNaN(result.formsState, 'formsState');
-    noNaN(result.summaryInfo, 'summaryInfo');
-    noNaN(result.worksheets, 'worksheets');
-    noNaN(result.carryover, 'carryover');
-    noNaN(marginalRates, 'marginalRates');
+    input['1099'] = [{
+      ...input['1099'][0], 'Ordinary Dividends': 100, 'Qualified Dividends': 100, Interest: 0, Realized1256: 10_000,
+    }];
+    const { worksheets } = computeAllWithRates(input).result;
+    // QDCG worksheet line 3: min(Schedule D line 15, line 16) = 60% of the 1256 gain
+    expect(worksheets['QualifiedDividendsAndCapitalGains'][3]).toBe(6_000);
+  });
+
+  it('spouse W2 is ignored when filing single', () => {
+    const input = createDefaultInput();
+    const single = computeAllWithRates(input).result.summaryInfo['Federal/f1040 9 Total income'];
+    input.W2 = [...input.W2, { ...input.W2[0], id: 'spouse-w2', Owner: 'spouse', Wages: 50_000 }];
+    expect(computeAllWithRates(input).result.summaryInfo['Federal/f1040 9 Total income']).toBe(single);
+    input.filing_status = 'married_filing_jointly';
+    expect(computeAllWithRates(input).result.summaryInfo['Federal/f1040 9 Total income']).toBe(single as number + 50_000);
   });
 
   it('empty input (no W2, no income) produces no NaN', () => {
@@ -151,7 +158,7 @@ describe('compute taxes', () => {
         'Other Description': '',
       },
     ];
-    input.Charitable = [{ id: 'c1', Entity: 'Charity', Amount: 5000 }];
+    input.Charitable = [{ id: 'c1', Entity: 'Charity', Amount: 5000, DonorAdvisedFund: false }];
     input.Other = [{ id: 'o1', PropertyTax: 10000, CoopStateTaxes: 0, DaysInNYC: 365 }];
     const { result, marginalRates } = computeAllWithRates(input);
     noNaN(result.formsState, 'formsState');

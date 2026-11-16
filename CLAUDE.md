@@ -2,7 +2,7 @@
 
 ## What This Project Does
 
-Browser-based US tax form filler (Form 1040 and related federal/NY state forms) for 2025 single filers.
+Browser-based US tax form filler (Form 1040 and related federal/NY state forms) for 2025 and 2026 (provisional), single or married filing jointly.
 Users enter financial data, the app computes taxes and generates filled PDF forms + JSON outputs.
 Everything runs client-side -- no server, no backend, no data leaves the browser.
 
@@ -11,10 +11,10 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 ## Source / Reference
 
 - **Computation logic**: ported from https://github.com/FrenchCommando/taxes1040 (Python)
-  - That repo has battle-tested tax computation for 2018-2025
+  - That repo has battle-tested tax computation for 2018-2026 (2026 provisional, see its `forms/2026/notes.md`)
   - Input format: `input_data/{year}/input.json` defines the canonical input schema
   - Output: `data.json` (all form fields), `summary.json` (key figures), `worksheet.json` (intermediate), `carryover.json` (next year), `marginal_rates.json`
-  - Blank PDF forms and `.keys` annotation mappings are copied from `forms/2025/`
+  - Blank PDF forms and `.keys` annotation mappings are copied from `forms/2025/` (2026 has none yet: no PDF download for 2026)
 
 ## Design Decisions
 
@@ -61,27 +61,41 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 The input follows the structure from taxes1040 `input_data/{year}/input.json`:
 
 ```
-W2[]            - employer info, wages, taxes withheld, state/local
+year            - '2025' | '2026' (UI-only, picks the config)
+filing_status   - 'single' | 'married_filing_jointly'
+spouse          - first_name, initial, last_name, ssn, occupation, presidential_election, birth_date (MFJ)
+birth_date      - optional, Schedule 1-A senior deduction
+W2[]            - employer info, wages, taxes withheld, state/local, Owner ('self' | 'spouse')
 1099[]          - interest, dividends, foreign tax, trades[], 1256 contracts
 1098[]          - mortgage payments[], principal balance, lender info
 EstimatedIncomeTax  - Federal[] and State[] payments with dates/amounts
-Charitable[]    - entity name + amount (cash contributions)
+Charitable[]    - entity name + amount (cash contributions) + DonorAdvisedFund
 Other[]         - property tax, co-op taxes, days in NYC
 prior_year      - optional carryover (taxable income, Schedule D net short/long-term, loss deduction)
+health_savings_account*  - Form 8889 (coverage, contributions, distributions, qualified medical expenses
+                  (null = all qualified), exceptions, testing period income)
+qualified_tips / qualified_tips_business / qualified_overtime / qualified_overtime_1099 / vehicle_loans[]
+                - Schedule 1-A
 ```
 
+`normalizeInput()` (types/input.ts) fills fields missing from older exports / taxes1040 `input.json` files;
+it runs on import and in the persist migration.
+
 Auto-derived fields (not in UI):
-- `scheduleD` — true if any 1099 has trades
+- `scheduleD` — true if there is any 1099 (Schedule D is built for any 1099, like taxes1040 which always sets it)
 - `virtual_currency` — true if any trade description contains "crypto"
 - `presidential_election_self` — always false
 
 ## Computation Architecture
 
 - `src/computation/fill_taxes.ts` — faithful port of `forms_core_impl.py`, builds full `forms_state` dict
-- `src/computation/config_2025.ts` — year-specific constants and bracket functions
+- `src/computation/config.ts` — `CONFIG_2025` / `CONFIG_2026` (port of `forms_core_{year}.py`), bracket functions
+  (port of `forms_functions.py`), `filing_status_overrides` for MFJ, `resolveConfig()`
 - `src/computation/form_names.ts` — form key constants
-- `src/computation/marginal_rates.ts` — analytical marginal rate computation (port of `marginal_rates.py`)
-- `src/computation/pdf_filler.ts` — browser-side PDF filling using pdf-lib
+- `src/computation/marginal_rates.ts` — numeric marginal rates (port of `marginal_rates.py`): re-runs `fillTaxes`
+  with `exact: true` and finds the knots of the piecewise-linear tax (~200 ms per compute)
+- `src/computation/pdf_filler.ts` — browser-side PDF filling using pdf-lib. Widgets are walked in page order
+  and repeats of the same name get `#2`, `#3`, ... like taxes1040 `iter_widgets` (e.g. f1116 box c)
 - `src/computation/compute.ts` — thin wrapper that orchestrates fill_taxes + marginal_rates
 
 ## How to Run
@@ -102,8 +116,9 @@ npm run test:watch # watch mode
 ```
 
 Tests:
-- `src/computation/compute.test.ts` — verifies no NaN values across hand-built inputs (default, empty, no W2 with various income types)
-- `src/computation/scenarios.test.ts` — 15 scenario tests imported from `taxes1040/tests/scenarios/2025/`, comparing summary and carryover output against the Python reference. Scenario fixtures live in `tests/scenarios/` (outside `src/`, not bundled in production)
+- `src/computation/compute.test.ts` — verifies no NaN values across hand-built inputs (default for each year x filing status, empty, no W2 with various income types) plus a few regressions
+- `src/computation/scenarios.test.ts` — scenario tests copied from `taxes1040/tests/scenarios/{2025,2026}/`, comparing summary (values and exact key set) and carryover output against the Python reference. Fixtures live in `tests/scenarios/<year>/` (outside `src/`, not bundled in production). To refresh: copy the year folders from taxes1040 again
+- `src/computation/pdf_filler.test.ts` — every `.keys` annotation in `public/forms/2025` resolves to a widget of its blank PDF
 
 ### Rounding: banker's rounding (round half to even)
 `pushToDict` uses banker's rounding to match IRS conventions. This is the standard for tax forms — when a value lands exactly on .5, it rounds to the nearest even number.
@@ -119,12 +134,12 @@ do-my-taxes/
 |   |-- components/     # React UI components (W2, 1099, 1098, etc. sections + summary + marginal rates)
 |   |-- computation/    # Tax computation logic (ported from Python)
 |   |-- store/          # Zustand state management
-|   |-- types/          # TypeScript type definitions (input, output)
+|   |-- types/          # TypeScript type definitions (input)
 |   +-- App.tsx         # Root component (layout, toolbar, instructions)
 |-- public/
 |   +-- forms/2025/     # Blank IRS/NY PDF templates + .keys annotation mappings
 |-- tests/
-|   +-- scenarios/      # Test fixtures from taxes1040 (input.json + expected outputs per scenario)
+|   +-- scenarios/      # Test fixtures from taxes1040, per year (input.json + expected outputs per scenario)
 |-- .github/workflows/  # GitHub Actions deploy to Pages
 |-- index.html
 |-- package.json

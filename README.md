@@ -1,6 +1,6 @@
 # Do My Taxes
 
-Browser-based US tax form filler for **2025 single filers**. Enter your financial data, compute your taxes, and download filled IRS PDF forms — all client-side, nothing leaves your browser.
+Browser-based US tax form filler for **2025 and 2026, single or married filing jointly**. Enter your financial data, compute your taxes, and download filled IRS PDF forms — all client-side, nothing leaves your browser.
 
 https://frenchcommando.github.io/do-my-taxes/
 
@@ -9,7 +9,9 @@ https://frenchcommando.github.io/do-my-taxes/
 1. You enter your W-2, 1099 (including trades), 1098, estimated tax payments, charitable contributions, and other deduction info
 2. Click **Compute Taxes** to run the full federal + NY state tax computation
 3. Review the summary (income, deductions, tax, refund/owed, NY state/city taxes) and marginal tax rates
-4. Download filled PDF forms (1040, Schedules A/B/D, Forms 8949, 6251, 6781, 1116, 8959, 8960, NY IT-201, IT-196) and/or JSON output
+4. Download filled PDF forms (1040, Schedules 1/1-A/2/3/A/B/D, Forms 8949, 6251, 6781, 1116, 8889, 8959, 8960, NY IT-201, IT-196) and/or JSON output
+
+**2026 is provisional**: the federal numbers are final (Rev. Proc. 2025-32 and the OBBBA changes), but the 2026 IRS forms are not published yet, so 2026 has no PDF download (JSON only), and NY / NYC use the 2025 tax tables as placeholders.
 
 ## Privacy
 
@@ -24,7 +26,7 @@ This tool is not tax advice. Results may contain errors. Consult a qualified tax
 - **Dark/Light mode** (top bar) — Toggle theme, defaults to system preference
 - **GitHub** (top bar) — Link to source code
 - **Import** (top bar) — Load a JSON input file (your own export or a taxes1040 `input.json`)
-- **Export** (top bar) — Save your current input as `tax-input-2025.json`
+- **Export** (top bar) — Save your current input as `tax-input-<year>.json`
 - **Reset** (top bar) — Clear everything and reload the sample data
 - **Add / Delete** (each section) — Add or remove entries (W-2s, 1099s, trades, mortgage payments, etc.)
 - **Compute Taxes** (right panel) — Run the full tax computation and show the summary
@@ -35,8 +37,11 @@ This tool is not tax advice. Results may contain errors. Consult a qualified tax
 
 The page opens pre-filled with sample data. Edit or clear each section as needed.
 
+### Filing
+Tax year (2025, or 2026 provisional), filing status (single or married filing jointly), birth dates (for the Schedule 1-A senior deduction). For married filing jointly: spouse name, SSN, occupation.
+
 ### W-2 Wage Statements
-Employer info, wages, federal/state/local tax withheld, Social Security and Medicare wages and taxes.
+Employer info, wages, federal/state/local tax withheld, Social Security and Medicare wages and taxes. When married filing jointly, each W-2 is marked as yours or your spouse's (excess Social Security withholding is figured per person).
 
 ### 1099 Income
 Interest, dividends (ordinary and qualified), foreign tax paid, capital gain distributions, Section 1256 contracts (realized/unrealized), other income. Each 1099 has a collapsible **Trades** sub-section for Form 8949 entries (description, shares, dates, proceeds, cost, wash sale, short/long term, form code A-F).
@@ -44,11 +49,17 @@ Interest, dividends (ordinary and qualified), foreign tax paid, capital gain dis
 ### 1098 Mortgage
 Lender info, principal balance, and individual mortgage payments (date, interest amount, principal amount). Mortgage interest is prorated if the balance exceeds $750k (federal) or $1M (NY).
 
+### Health Savings Account (Form 8889)
+Self-only or family coverage, your and your employer's contributions, distributions, qualified medical expenses (taxable distributions get the 20% additional tax unless you're 65+ / disabled), and the testing-period income (10% additional tax).
+
+### Tips, Overtime, Car Loan Interest (Schedule 1-A)
+Qualified tips, qualified overtime, and up to two vehicle loans (2025-2028 deductions, with their income phaseouts).
+
 ### Estimated Tax Payments
 Federal and state estimated payments with dates and amounts.
 
 ### Charitable Contributions
-Cash contributions (entity name and amount). Flows to Schedule A line 11.
+Cash contributions (entity name and amount). Flows to Schedule A line 11. From 2026, non-itemizers also deduct up to $1,000 ($2,000 MFJ) of cash gifts, except gifts to donor-advised funds (checkbox).
 
 ### Other
 Property tax, co-op state taxes, days in NYC. Property tax flows to SALT deduction.
@@ -71,7 +82,7 @@ Shows the marginal tax rate on your next dollar for each income category (W2 wag
 - **summary.json** — Key figures with human-readable labels.
 - **worksheet.json** — Intermediate worksheet computations (SALT, mortgage interest, qualified dividends, capital loss carryover, etc.).
 - **carryover.json** — Values to carry forward to next year (taxable income, Schedule D net short/long-term, loss deduction, foreign tax credit carryforward).
-- **marginal_rates.json** — Analytical marginal rates with segment breakpoints for every income category.
+- **marginal_rates.json** — Marginal rates with segment breakpoints for every income category.
 
 ## How to file
 
@@ -80,29 +91,31 @@ Shows the marginal tax rate on your next dollar for each income category (W2 wag
 
 ## Import / Export
 
-- **Export** — Downloads your current input as `tax-input-2025.json`
+- **Export** — Downloads your current input as `tax-input-<year>.json`
 - **Import** — Load a previously exported JSON file. Also accepts the `input.json` format from [taxes1040](https://github.com/FrenchCommando/taxes1040).
 
 ## Computation details
 
-The tax engine is a TypeScript port of [taxes1040](https://github.com/FrenchCommando/taxes1040), which has battle-tested computation for 2018-2025. Currently supports:
+The tax engine is a TypeScript port of [taxes1040](https://github.com/FrenchCommando/taxes1040), which has battle-tested computation for 2018-2026. Currently supports:
 
-- Federal Form 1040 (single filer, no dependents)
-- Schedule A (itemized deductions with SALT worksheet — $40k cap with phaseout for 2025)
+- Federal Form 1040 (single or married filing jointly, no dependents)
+- Schedule 1-A (tips, overtime, car loan interest, senior deduction)
+- Schedule 3 (foreign tax credit, excess Social Security withholding)
+- Schedule A (itemized deductions with SALT worksheet — $40k cap with phaseout; 2026: 0.5% AGI charitable floor and the 2/37 limitation for the 37% bracket)
 - Schedule B (interest and dividends)
 - Schedule D (capital gains/losses with carryover)
 - Form 8949 (trades, multiple pages)
 - Form 6781 (Section 1256 contracts, 60/40 split)
-- Form 6251 (AMT with qualified dividend/capital gain preferential rates)
+- Form 6251 (AMT with qualified dividend/capital gain preferential rates, AMT foreign tax credit; 2026: 50% exemption phaseout)
 - Form 1116 (foreign tax credit)
-- Form 8889 (HSA deduction)
+- Form 8889 (HSA deduction, taxable distributions, additional taxes)
 - Form 8959 (Additional Medicare Tax)
 - Form 8960 (Net Investment Income Tax, 3.8%)
 - NY IT-201 (NY state tax with recapture)
 - NY IT-196 (NY itemized deductions with high-income adjustment)
 - Qualified Dividends and Capital Gain Tax Worksheet
 - Capital Loss Carryover Worksheet
-- Analytical marginal rate computation with segment breakpoints
+- Marginal rates measured by re-running the computation, with segment breakpoints
 
 ## How to run locally
 
