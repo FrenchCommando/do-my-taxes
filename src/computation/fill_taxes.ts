@@ -315,7 +315,9 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
       buildForm1040sd();
     }
 
-    f['7_n'] = !scheduleDFiled;
+    // "Schedule D not required" box: only for capital gain distributions reported directly on line 7;
+    // here they always go through Schedule D, and without gains line 7 is simply blank
+    f['7_n'] = false;
 
     if (healthSavingsAccount || additionalIncome) {
       // fill 8889 and schedule 1
