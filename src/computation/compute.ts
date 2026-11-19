@@ -42,9 +42,6 @@ export function buildInputDict(input: TaxInput): Record<string, unknown> {
     occupation: input.occupation,
     presidential_election_self: false,
     virtual_currency: e1099.some(entry => (entry.Trades || []).some(trade => String(trade.SalesDescription).toLowerCase().includes('crypto'))),
-    // Schedule D is built for any 1099 (trades, 1256 contracts, capital gain distributions); taxes1040 always
-    // sets scheduleD. Deriving it from trades only made the QDCG worksheet treat 1256 short-term gains as long-term.
-    scheduleD: e1099.length > 0,
     checking: input.checking,
     routing_number: input.routing_number,
     account_number: input.account_number,

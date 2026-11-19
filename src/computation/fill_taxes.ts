@@ -135,6 +135,9 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
   const otherEntries: D[] = d['Other'] || [];
   const entries1099: D[] = d['1099'] || [];
   const has1099 = entries1099.length > 0;
+  // Schedule D is built for any 1099 (taxes1040 always sets its `scheduleD` input flag); derived here so callers
+  // can't pass a flag that disagrees with the forms actually built
+  const scheduleDFiled = has1099;
   let dividendsQualified: number | null = null;
   const additionalIncome: number | null = null;
   const healthSavingsAccount: boolean = d['health_savings_account'] || false;
@@ -312,7 +315,7 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
       buildForm1040sd();
     }
 
-    f['7_n'] = !d['scheduleD'];
+    f['7_n'] = !scheduleDFiled;
 
     if (healthSavingsAccount || additionalIncome) {
       // fill 8889 and schedule 1
@@ -899,13 +902,13 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
       const scheduleD = existing(k_1040sd);
       const usePartIII =
         (dividendsQualified !== null && dividendsQualified > 0) ||
-        (d['scheduleD'] && k_1040sd in formsState && (scheduleD['15'] || 0) > 0 && (scheduleD['16'] || 0) > 0);
+        (scheduleDFiled && (scheduleD['15'] || 0) > 0 && (scheduleD['16'] || 0) > 0);
 
       if (usePartIII) {
         // Part III: 0%/15%/20% on qualified dividends and capital gains, 26%/28% on ordinary portion only
         const qdiv = f1040['3_a'] || 0;
         let sdGain: number;
-        if (d['scheduleD'] && k_1040sd in formsState) {
+        if (scheduleDFiled) {
           const sd15 = scheduleD['15'] || 0;
           const sd16 = scheduleD['16'] || 0;
           sdGain = (sd15 > 0 && sd16 > 0) ? Math.max(0, Math.min(sd15, sd16)) : 0;
@@ -1332,10 +1335,10 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
     const f1040 = existing(k_1040);
     ws[1] = f1040['15'] || 0;  // except if foreign earned income
     ws[2] = f1040['3_a'] || 0;
-    if (d['scheduleD']) {
+    if (scheduleDFiled) {
       ws[3] = Math.max(0, Math.min(existing(k_1040sd)['15'] || 0, existing(k_1040sd)['16'] || 0));
     } else {
-      ws[3] = f1040['7_value'] || 0;
+      ws[3] = f1040['7_value'] || 0;  // capital gain distributions (line 7 without Schedule D)
     }
     ws[4] = ws[2] + ws[3];
     ws[5] = Math.max(0, ws[1] - ws[4]);

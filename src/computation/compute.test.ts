@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { computeAllWithRates } from './compute';
 import { FILING_STATUSES, TAX_YEARS } from './config';
 import { createDefaultInput, normalizeInput } from '../types/input';
@@ -165,4 +167,39 @@ describe('compute taxes', () => {
     noNaN(result.summaryInfo, 'summaryInfo');
     noNaN(marginalRates, 'marginalRates');
   });
+});
+
+describe('marginal rate segments', () => {
+  const wageSegments = (input: TaxInput) => computeAllWithRates(input).marginalRates.marginal_rates['W2 Wages'].segments;
+  const knotAt = (input: TaxInput, position: number) => wageSegments(input).find(segment => segment.to === position)?.next_knot;
+
+  it('labels where NIIT stops growing (MAGI over the threshold reaches net investment income)', () => {
+    const input = { ...createDefaultInput(), year: '2026' as const, filing_status: 'married_filing_jointly' as const };
+    input.W2 = [{ ...input.W2[0], Wages: 100_000 }];
+    // the sample's non-wage income is all investment income: AGI - 250,000 reaches it at +150,000 of wages
+    expect(knotAt(input, 150_000)).toContain('NIIT capped at net investment income');
+  });
+
+  it('measures cliffs at the knot, without the rate change after it', () => {
+    const input = { ...createDefaultInput(), year: '2026' as const, filing_status: 'married_filing_jointly' as const };
+    input.W2 = [{ ...input.W2[0], Wages: 100_000, SocialSecurity_wages: 100_000, Medicare_wages: 100_000 }];
+    input['1099'] = [];
+    input['1098'] = [];
+    input.Charitable = [];
+    // the NYC schedule's rounded base amount makes a $0.45 jump at $90,000: not a cliff in whole dollars
+    expect(knotAt(input, 6_051)).toBe('NYC bracket at taxable $90,000');
+    // NY recapture worksheet 2 starts at taxable $161,550 (IT-201-I): $333 + $807 x 32.1% - $332.25 = $260
+    expect(knotAt(input, 77_601)).toContain('cliff: tax +$260');
+  });
+
+  it('collapses Schedule 1-A stepped phaseouts and keeps a cliff from another rule a dollar away', () => {
+    const raw = JSON.parse(readFileSync(join(__dirname, '..', '..', 'tests', 'scenarios', '2026', 'schedule_1a_phaseout', 'input.json'), 'utf-8'));
+    const input = normalizeInput({ ...raw, year: '2026' });
+    const segments = wageSegments(input);
+    expect(segments.length).toBeLessThan(40);
+    expect(segments.some(segment => segment.next_knot?.startsWith('stepped phaseout: 115 steps of +$35 every $1,000'))).toBe(true);
+    // the $32 Schedule 1-A step and the $63 NYC fixed school credit (income over $250,000) a dollar apart
+    expect(knotAt(input, 69_500)).toBe('NYC fixed school credit ends (income $250,000); cliff: tax +$95');
+    expect(segments.every(segment => segment.next_knot !== 'rate change')).toBe(true);
+  }, 60_000);  // ~7 s: every step of every staircase is a knot to locate
 });

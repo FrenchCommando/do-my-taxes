@@ -82,7 +82,8 @@ qualified_tips / qualified_tips_business / qualified_overtime / qualified_overti
 it runs on import and in the persist migration.
 
 Auto-derived fields (not in UI):
-- `scheduleD` — true if there is any 1099 (Schedule D is built for any 1099, like taxes1040 which always sets it)
+- Schedule D — `fillTaxes` files it whenever there is any 1099 (taxes1040 always sets its `scheduleD` flag);
+  there is no input flag on this side
 - `virtual_currency` — true if any trade description contains "crypto"
 - `presidential_election_self` — always false
 

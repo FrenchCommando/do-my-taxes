@@ -15,8 +15,8 @@ import { bankersRound, fillTaxes, getFilingStatus } from './fill_taxes';
 import { resolveConfig } from './config';
 import type { FilingStatus, TaxConfig, TaxYear } from './config';
 import {
-  k_1040, k_1040s1a, k_1040sa, k_1040sd, k_6251, k_8959, k_8960, k_it196, k_it201,
-  w_qualified_dividends_and_capital_gains, w_salt_deduction,
+  k_1040, k_1040s1a, k_1040sa, k_1040sd, k_1116, k_6251, k_8959, k_8960, k_it196, k_it201,
+  w_itemized_limitation, w_qualified_dividends_and_capital_gains, w_salt_deduction,
 } from './form_names';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +80,6 @@ function addTrade(data: D, amount: number, longShort: string, formCode: string) 
       Proceeds: amount, Cost: 0, LongShort: longShort, FormCode: formCode,
     }],
   });
-  data['scheduleD'] = true;
 }
 
 function add1256(data: D, amount: number) {
@@ -168,6 +167,16 @@ interface Metrics {
   preferential_income: boolean;
   schedule_1a: boolean;
   amti: number;
+  /** Form 6251 line 6 (NaN without Form 6251) */
+  amt_taxable: number;
+  /** ordinary part of line 6: the 26%/28% rates apply to it when Part III taxes gains/dividends separately */
+  amt_ordinary: number;
+  /** IRC 68 worksheet (2026+): income over the 37% bracket start, and that excess minus the itemized
+   * deductions (the limitation is 2/37 of the smaller). NaN when the worksheet isn't used. */
+  irc68_income_over: number;
+  irc68_over_itemized: number;
+  /** 2026+: Schedule A gifts minus the 0.5% AGI floor (NaN before 2026) */
+  charitable_over_floor: number;
   ny_agi: number;
   ny_taxable: number;
   federal_agi_ny: number;
@@ -175,6 +184,8 @@ interface Metrics {
   ny_itemizing: boolean;
   amt: boolean;
   foreign_tax_limited: boolean;
+  amt_foreign_tax_limited: boolean;
+  nonitemizer_charitable_capped: boolean;
   salt_capped: boolean;
   /** Form 8960 line 15 - line 12: MAGI over the threshold minus net investment income (NIIT = 3.8% of the smaller) */
   niit_magi_over_income: number;
@@ -193,6 +204,17 @@ function run(baseData: D, config: TaxConfig, change: Change | null, amount: numb
   const scheduleD = (formsState[k_1040sd] as D) || {};
   const saltWorksheet = worksheets[w_salt_deduction] ?? new Array(11).fill(0);
   const f8960 = (formsState[k_8960] as D) || {};
+  const f6251 = formsState[k_6251] as D | undefined;
+  const amtTaxable = f6251 ? f6251['6_value'] || 0 : NaN;
+  // Form 6251 Part III: qualified dividends + net capital gain are taxed at the capital gain rates
+  const netGain = (scheduleD['15'] || 0) > 0 && (scheduleD['16'] || 0) > 0 ? Math.min(scheduleD['15'], scheduleD['16']) : 0;
+  const amtGains = (f1040['3_a'] || 0) + netGain;
+  const limitation = worksheets[w_itemized_limitation];
+  const itemizedLimitation = k_1040sa in formsState && limitation !== undefined;
+  const gifts = ((data['Charitable'] ?? []) as D[]);
+  const giftTotal = gifts.reduce((total, gift) => total + (gift['Amount'] || 0), 0);
+  const nonDafGifts = gifts.filter(gift => !gift['DonorAdvisedFund']).reduce((total, gift) => total + (gift['Amount'] || 0), 0);
+  const amtForeignTaxCredit = summaryInfo[`${k_6251} 8 AMT foreign tax credit (simplified limitation election)`];
   return {
     federal: f1040['24'] || 0,
     ny_state: it201['46'] || 0,
@@ -210,6 +232,13 @@ function run(baseData: D, config: TaxConfig, change: Change | null, amount: numb
     preferential_income: (f1040['3_a'] || 0) > 0 || ((scheduleD['15'] || 0) > 0 && (scheduleD['16'] || 0) > 0),
     schedule_1a: k_1040s1a in formsState,
     amti: (summaryInfo[`${k_6251} 4 Alternative minimum taxable income`] as number) || 0,
+    amt_taxable: amtTaxable,
+    amt_ordinary: amtGains > 0 ? Math.max(0, amtTaxable - amtGains) : amtTaxable,
+    irc68_income_over: itemizedLimitation ? limitation[2] - limitation[3] : NaN,
+    irc68_over_itemized: itemizedLimitation ? limitation[4] - limitation[1] : NaN,
+    charitable_over_floor: config.charitable_agi_floor_rate
+      ? giftTotal - (f1040['11'] || 0) * config.charitable_agi_floor_rate
+      : NaN,
     ny_agi: it201['33'] || 0,
     ny_taxable: it201['37'] || 0,
     federal_agi_ny: it201['19'] || 0,
@@ -217,6 +246,9 @@ function run(baseData: D, config: TaxConfig, change: Change | null, amount: numb
     ny_itemizing: k_it196 in formsState,
     amt: k_6251 in formsState,
     foreign_tax_limited: Object.keys(summaryInfo).some(key => key.includes('Excess foreign tax')),
+    amt_foreign_tax_limited: typeof amtForeignTaxCredit === 'number'
+      && amtForeignTaxCredit < ((formsState[k_1116] as D)?.['14'] || 0),
+    nonitemizer_charitable_capped: (f1040['charitable_nonitemizer'] || 0) > 0 && f1040['charitable_nonitemizer'] < nonDafGifts,
     salt_capped: saltWorksheet[9] > 0 && saltWorksheet[10] >= saltWorksheet[9],
     niit_magi_over_income: (f8960['15'] || 0) - (f8960['12'] || 0),
     niit: k_8960 in formsState,
@@ -267,30 +299,36 @@ function differs(slopeA: Taxes, slopeB: Taxes): boolean {
 
 /** Resolve a small interval holding one rate change into [knot, jump]. The left and right lines are
  * measured just outside the interval and intersected; if they don't meet inside it, the change is a
- * jump (cliff), located to the dollar by bisection. */
+ * jump (cliff), located to the dollar by bisection.
+ * The measuring windows stop a dollar short of the interval, so a cliff sitting right at `start` or just
+ * past `end` (e.g. a Schedule 1-A step and the NYC school credit cliff a dollar apart) doesn't skew them. */
 function locate(curve: TaxCurve, start: number, end: number): [number, number] {
-  const left = start > 0 ? curve.slope(Math.max(0, start - SLOPE_STEP), start) : curve.slope(start, start + 1);
-  const right = curve.slope(end, end + SLOPE_STEP);
+  const leftEnd = start > 1 ? start - 1 : start;
+  const left = start > 0 ? curve.slope(Math.max(0, leftEnd - SLOPE_STEP), leftEnd) : curve.slope(start, start + 1);
+  const right = curve.slope(end + 1, end + 1 + SLOPE_STEP);
+  const totalLeft = sum(left);
+  const totalRight = sum(right);
+  const baseTotal = sum(curve.tax(start));
+  const endTotal = sum(curve.tax(end));
   // use the component whose slope changes the most
   let index = 0;
   for (const each of [1, 2]) {
     if (Math.abs(left[each] - right[each]) > Math.abs(left[index] - right[index])) index = each;
   }
-  const taxStart = curve.tax(start)[index];
-  const taxEnd = curve.tax(end)[index];
   if (Math.abs(left[index] - right[index]) > SLOPE_TOLERANCE) {
+    const taxStart = curve.tax(start)[index];
+    const taxEnd = curve.tax(end)[index];
     const knot = (taxEnd - taxStart + left[index] * start - right[index] * end) / (left[index] - right[index]);
-    if (start <= knot && knot <= end) {
-      // a kink: the tax at the intersection lies on both lines (a jump would leave a gap)
-      const onLeftLine = taxStart + left[index] * (knot - start);
-      if (Math.abs(curve.tax(knot)[index] - onLeftLine) < 0.5) return [bankersRound(knot), 0];
+    // a kink: the total tax at the intersection lies on both lines, and nothing else (a jump in another
+    // component) happens in the interval
+    const onLines = (point: number) => baseTotal + totalLeft * (Math.min(point, knot) - start)
+      + totalRight * Math.max(0, point - knot);
+    if (start <= knot && knot <= end
+      && Math.abs(sum(curve.tax(knot)) - onLines(knot)) < 0.5 && Math.abs(endTotal - onLines(end)) < 0.5) {
+      return [bankersRound(knot), 0];
     }
   }
   // jump: find where the tax leaves the left line
-  const totalLeft = sum(left);
-  const totalRight = sum(right);
-  const baseTotal = sum(curve.tax(start));
-  const endTotal = sum(curve.tax(end));
   // gap at `end` between the actual tax and the left line: the jump plus the slope change since the jump
   const gap = endTotal - baseTotal - totalLeft * (end - start);
   let low = start;
@@ -340,11 +378,23 @@ function findKnots(curve: TaxCurve, horizon: number): [number, number][] {
     }
   }
   knots.sort((first, second) => first[0] - second[0] || first[1] - second[1]);
-  const unique = new Map<number, number>();
+  // the same knot can be found from neighbouring intervals: keep one per position (preferring the one that
+  // measured the cliff). Knots a dollar or two apart are separate events (e.g. cliffs in two components)
+  // shown as one, with their jumps added.
+  const byPosition = new Map<number, number>();
   for (const [knot, jump] of knots) {
-    if (![...unique.keys()].some(existing => Math.abs(knot - existing) <= 2)) unique.set(knot, jump);
+    if (!byPosition.has(knot) || Math.abs(jump) > Math.abs(byPosition.get(knot)!)) byPosition.set(knot, jump);
   }
-  return [...unique.entries()].sort((first, second) => first[0] - second[0]);
+  const unique: [number, number][] = [];
+  for (const [knot, jump] of [...byPosition.entries()].sort((first, second) => first[0] - second[0])) {
+    const previous = unique[unique.length - 1];
+    if (previous && knot - previous[0] <= 2) {
+      previous[1] += jump;
+    } else {
+      unique.push([knot, jump]);
+    }
+  }
+  return unique;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -379,6 +429,8 @@ function thresholds(config: TaxConfig): Threshold[] {
       `AMT exemption phaseout begins (AMTI $${formatDollars(config.should_fill_6251_phaseout)})`, 'amt'],
     ['ny_agi', config.ny_itemized_adjustment_start,
       `NY itemized deduction adjustment begins (NYAGI $${formatDollars(config.ny_itemized_adjustment_start)})`, 'ny_itemizing'],
+    ['federal_agi_ny', config.ny_itemized_deduction_threshold,
+      `NY itemized deductions reduced by 3% of federal AGI over $${formatDollars(config.ny_itemized_deduction_threshold)}`, 'ny_itemizing'],
     ['ny_agi', 475_000, 'NY itemized deduction adjustment worksheet 4 (NYAGI $475,000)', 'ny_itemizing'],
     ['ny_agi', 525_000, 'NY itemized deduction adjustment reaches 50% (NYAGI $525,000)', 'ny_itemizing'],
     ['ny_agi', 1_000_000, 'NY itemized deduction limited to 50% of charitable gifts (NYAGI $1M)', 'ny_itemizing'],
@@ -395,7 +447,15 @@ function thresholds(config: TaxConfig): Threshold[] {
       `SALT cap reaches the $${formatDollars(config.salt_floor)} floor (AGI $${formatDollars(saltFloorAgi)})`, 'itemizing']);
   }
   const amtExemptionGone = config.should_fill_6251_phaseout + config.amt_exemption / (config.amt_phaseout_rate ?? 0.25);
-  result.push(['amti', amtExemptionGone, `AMT exemption fully phased out (AMTI $${formatDollars(amtExemptionGone)})`, 'amt']);
+  const amt28 = config.amt_28pct_threshold;
+  result.push(
+    ['amti', amtExemptionGone, `AMT exemption fully phased out (AMTI $${formatDollars(amtExemptionGone)})`, 'amt'],
+    ['amt_ordinary', amt28, `AMT 26% -> 28% rate (Form 6251 ordinary income $${formatDollars(amt28)})`, 'amt'],
+    ['amt_taxable', zeroBand, `AMT: 0% -> 15% capital gain rate at Form 6251 line 6 $${formatDollars(zeroBand)}`, 'amt'],
+    ['amt_taxable', twentyBand, `AMT: 15% -> 20% capital gain rate at Form 6251 line 6 $${formatDollars(twentyBand)}`, 'amt'],
+    ['amt_ordinary', zeroBand, `AMT: gains start to fill the 0% band (ordinary $${formatDollars(zeroBand)})`, 'amt'],
+    ['amt_ordinary', twentyBand, `AMT: gains start to fill the 15% band (ordinary $${formatDollars(twentyBand)})`, 'amt'],
+  );
   for (const bracket of config.ny_brackets) {
     result.push(['ny_taxable', bracket, `NY bracket at taxable $${formatDollars(bracket)}`, null]);
   }
@@ -407,8 +467,18 @@ function thresholds(config: TaxConfig): Threshold[] {
     result.push(['ny_taxable', bracket, `NYC bracket at taxable $${formatDollars(bracket)}`, null]);
   }
   if (config.itemized_limitation_rate) {
-    result.push(['agi', config.fed_brackets[config.fed_brackets.length - 1], 'IRC 68 itemized deduction limitation begins', 'itemizing']);
+    const topBracket = formatDollars(config.fed_brackets[config.fed_brackets.length - 1]);
+    result.push(
+      ['irc68_income_over', 0, `IRC 68 itemized deduction limitation begins (income before deductions over $${topBracket})`, 'itemizing'],
+      ['irc68_over_itemized', 0, `IRC 68 limitation reaches 2/37 of all itemized deductions (income over $${topBracket} exceeds them)`, 'itemizing'],
+    );
   }
+  if (config.charitable_agi_floor_rate) {
+    result.push(['charitable_over_floor', 0,
+      `Charitable gifts reach the ${config.charitable_agi_floor_rate * 100}% AGI floor`, 'itemizing']);
+  }
+  result.push(['ny_agi', config.ny_itemized_adjustment_start + 50_000,
+    `NY itemized deduction adjustment fully phased in (NYAGI $${formatDollars(config.ny_itemized_adjustment_start + 50_000)})`, 'ny_itemizing']);
   if (config.schedule_1a) {
     result.push(
       ['agi', config.tips_overtime_phaseout_start, 'Schedule 1-A tips/overtime phaseout begins', 'schedule_1a'],
@@ -424,6 +494,9 @@ const FLAG_LABELS: [FlagMetric, string, string][] = [
   ['ny_itemizing', 'NY switches to itemized deductions', 'NY switches to the standard deduction'],
   ['amt', 'AMT starts to apply', 'AMT stops applying'],
   ['foreign_tax_limited', 'foreign tax credit reaches the Form 1116 limit', 'foreign tax credit below the Form 1116 limit'],
+  ['amt_foreign_tax_limited', 'AMT foreign tax credit reaches its limit', 'AMT foreign tax credit below its limit'],
+  ['nonitemizer_charitable_capped', 'non-itemizer charitable deduction reaches its limit',
+    'non-itemizer charitable deduction below its limit'],
   ['salt_capped', 'SALT deduction reaches its cap', 'SALT deduction below its cap'],
   ['niit', 'NIIT starts to apply', 'NIIT stops applying'],
   ['additional_medicare', 'Additional Medicare Tax starts to apply', 'Additional Medicare Tax stops applying'],
@@ -484,7 +557,59 @@ function segments(curve: TaxCurve, horizon: number, allThresholds: Threshold[]):
       merged.push(segment);
     }
   }
-  return merged;
+  return collapseStaircases(curve, merged, jumps, allThresholds);
+}
+
+const sameRates = (first: Rates, second: Rates) =>
+  COMPONENTS.every(component => bankersRound(first[component], 4) === bankersRound(second[component], 4));
+
+/** Stepped phaseouts (Schedule 1-A: $200 / $100 less deduction per $1,000 or fraction of income) make a cliff
+ * every $1,000. A run of at least MIN_STEPS equal cliffs at equal spacing with the same rate in between is
+ * shown as one segment whose rate averages the steps in. The cliff at the start of the run stays on the
+ * previous segment. */
+const MIN_STEPS = 3;
+
+function collapseStaircases(curve: TaxCurve, segmentList: Segment[], jumps: Map<number, number>,
+  allThresholds: Threshold[]): Segment[] {
+  const result: Segment[] = [];
+  let position = 0;
+  while (position < segmentList.length) {
+    const first = segmentList[position];
+    const jump = jumps.get(first.from) ?? 0;
+    // extend while the next segment starts with the same cliff, at the same spacing, with the same rates
+    let last = position;
+    while (jump && last + 1 < segmentList.length) {
+      const current = segmentList[last];
+      const next = segmentList[last + 1];
+      const spacing = next.from - current.from;
+      if (jumps.get(next.from) !== jump || !sameRates(current.rates, first.rates)
+        || Math.abs(spacing - (segmentList[position + 1].from - first.from)) > 2) break;
+      last += 1;
+    }
+    const steps = last - position;  // cliffs inside the collapsed range (at the start of segments position+1..last)
+    if (steps + 1 < MIN_STEPS) {
+      result.push(first);
+      position += 1;
+      continue;
+    }
+    // [first.from, end]: `steps` cliffs, the last one at `end`
+    const end = segmentList[last].from;
+    const spacing = (end - first.from) / steps;
+    const [federal, nyState, nyc] = curve.slope(first.from, end).map(rate => bankersRound(rate, 6));
+    const otherLabels = label(curve, end, 0, allThresholds);
+    result.push({
+      from: first.from,
+      to: end,
+      rates: { federal, ny_state: nyState, nyc, combined: bankersRound(federal + nyState + nyc, 6) },
+      next_knot: `stepped phaseout: ${steps} steps of ${jump > 0 ? '+' : '-'}$${formatDollars(Math.abs(jump))} `
+        + `every $${formatDollars(spacing)}, averaged into this rate`
+        + (otherLabels === 'rate change' ? '' : `; ${otherLabels}`),
+    });
+    // the segment after the last cliff keeps its own rate and label
+    result.push(segmentList[last]);
+    position = last + 1;
+  }
+  return result;
 }
 
 export function computeMarginalRates(yearConfig: TaxConfig, baseData: D): MarginalRatesResult {
