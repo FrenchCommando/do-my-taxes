@@ -176,6 +176,8 @@ interface Metrics {
   amt: boolean;
   foreign_tax_limited: boolean;
   salt_capped: boolean;
+  /** Form 8960 line 15 - line 12: MAGI over the threshold minus net investment income (NIIT = 3.8% of the smaller) */
+  niit_magi_over_income: number;
   niit: boolean;
   additional_medicare: boolean;
 }
@@ -190,6 +192,7 @@ function run(baseData: D, config: TaxConfig, change: Change | null, amount: numb
   const it201 = (formsState[k_it201] as D) || {};
   const scheduleD = (formsState[k_1040sd] as D) || {};
   const saltWorksheet = worksheets[w_salt_deduction] ?? new Array(11).fill(0);
+  const f8960 = (formsState[k_8960] as D) || {};
   return {
     federal: f1040['24'] || 0,
     ny_state: it201['46'] || 0,
@@ -215,6 +218,7 @@ function run(baseData: D, config: TaxConfig, change: Change | null, amount: numb
     amt: k_6251 in formsState,
     foreign_tax_limited: Object.keys(summaryInfo).some(key => key.includes('Excess foreign tax')),
     salt_capped: saltWorksheet[9] > 0 && saltWorksheet[10] >= saltWorksheet[9],
+    niit_magi_over_income: (f8960['15'] || 0) - (f8960['12'] || 0),
     niit: k_8960 in formsState,
     additional_medicare: ((formsState[k_8959] as D)?.['18'] || 0) > 0,
   };
@@ -284,18 +288,23 @@ function locate(curve: TaxCurve, start: number, end: number): [number, number] {
   }
   // jump: find where the tax leaves the left line
   const totalLeft = sum(left);
+  const totalRight = sum(right);
   const baseTotal = sum(curve.tax(start));
-  const jump = sum(curve.tax(end)) - baseTotal - totalLeft * (end - start);
+  const endTotal = sum(curve.tax(end));
+  // gap at `end` between the actual tax and the left line: the jump plus the slope change since the jump
+  const gap = endTotal - baseTotal - totalLeft * (end - start);
   let low = start;
   let high = end;
   while (high - low > 1) {
     const middle = Math.floor((low + high) / 2);
-    if (Math.abs(sum(curve.tax(middle)) - baseTotal - totalLeft * (middle - start)) > Math.abs(jump) / 2) {
+    if (Math.abs(sum(curve.tax(middle)) - baseTotal - totalLeft * (middle - start)) > Math.abs(gap) / 2) {
       high = middle;
     } else {
       low = middle;
     }
   }
+  // the jump itself: the right line and the left line, both evaluated at the located knot
+  const jump = (endTotal - totalRight * (end - high)) - (baseTotal + totalLeft * (high - start));
   return [high, bankersRound(jump)];
 }
 
@@ -360,6 +369,8 @@ function thresholds(config: TaxConfig): Threshold[] {
     ['ordinary_taxable', twentyBand, `Gains start to fill the 15% band (ordinary taxable $${formatDollars(twentyBand)})`, 'preferential_income'],
     ['agi', config.salt_phaseout_start,
       `SALT cap phaseout begins (AGI $${formatDollars(config.salt_phaseout_start)})`, 'itemizing'],
+    ['niit_magi_over_income', 0,
+      `NIIT capped at net investment income (MAGI over $${formatDollars(config.niit_threshold)} reaches it)`, 'niit'],
     ['net_capital', 0, 'Net capital gain/loss crosses zero', null],
     ['net_long_term', 0, 'Net long-term gain/loss crosses zero', null],
     ['net_short_term', 0, 'Net short-term gain/loss crosses zero', null],
