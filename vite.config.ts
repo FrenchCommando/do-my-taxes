@@ -3,6 +3,6 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/do-my-taxes/',
+  base: process.env.VITE_BASE ?? '/do-my-taxes/',
   plugins: [react()],
 })
