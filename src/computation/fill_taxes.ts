@@ -128,8 +128,22 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
   const federalTax = sumW2('Federal_tax');
   const medicareTax = sumW2('Medicare_tax');
   const medicareWages = sumW2('Medicare_wages');
-  const stateTax = sumW2('State_tax');
-  const localTax = sumW2('Local_tax');
+  // Form 1099-R entries: GrossDistribution (box 1), TaxableAmount (box 2a), Federal_tax / State_tax / Local_tax
+  // (boxes 4, 14, 17), DistributionCode (box 7), IRA (box 7 IRA/SEP/SIMPLE checked), Payer, Owner.
+  // Box 2a is used as reported: Form 8606 (IRA basis, pro-rata rule) is not implemented
+  const retirementDistributions: D[] = d['1099R'] || [];
+  const sumEntries = (entries: D[], key: string) => entries.reduce((total, entry) => total + (entry[key] || 0), 0);
+  const retirementFederalTax = sumEntries(retirementDistributions, 'Federal_tax');
+  if (retirementDistributions.some(entry => entry['IRA'])) {
+    console.warn('1099-R from an IRA: box 2a taxable amount used as is, Form 8606 is not computed');
+  }
+  // Form 1099-G entries: Unemployment (box 1), Federal_tax (box 4), State_tax (box 11), Payer, Owner
+  const governmentPayments: D[] = d['1099G'] || [];
+  const unemployment = sumEntries(governmentPayments, 'Unemployment');
+  const governmentFederalTax = sumEntries(governmentPayments, 'Federal_tax');
+  const stateTax = sumW2('State_tax') + sumEntries(retirementDistributions, 'State_tax')
+    + sumEntries(governmentPayments, 'State_tax');
+  const localTax = sumW2('Local_tax') + sumEntries(retirementDistributions, 'Local_tax');
 
   const charitableGifts: D[] = d['Charitable'] || [];
   const otherEntries: D[] = d['Other'] || [];
@@ -139,7 +153,7 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
   // can't pass a flag that disagrees with the forms actually built
   const scheduleDFiled = has1099;
   let dividendsQualified: number | null = null;
-  const additionalIncome: number | null = null;
+  const additionalIncome = unemployment > 0;  // Schedule 1 Part I
   const healthSavingsAccount: boolean = d['health_savings_account'] || false;
   let capitalGains: number | null = null;
   let contract1256 = false;
@@ -319,6 +333,18 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
     // here they always go through Schedule D, and without gains line 7 is simply blank
     f['7_n'] = false;
 
+    // lines 4a/4b: IRA distributions; lines 5a/5b: pensions and annuities (401(k), 403(b), 457(b),
+    // including in-plan Roth rollovers)
+    for (const [line, ira] of [['4', true], ['5', false]] as const) {
+      const entries = retirementDistributions.filter(entry => Boolean(entry['IRA']) === ira);
+      pushToDict(f, `${line}_a`, sumEntries(entries, 'GrossDistribution'));
+      pushToDict(f, `${line}_b`, sumEntries(entries, 'TaxableAmount'));
+      // box 1 on line 4c/5c: rollover (code G direct rollover, H designated Roth account to Roth IRA)
+      if (entries.some(entry => /[GH]/.test(entry['DistributionCode'] ?? ''))) f[`${line}_c1`] = true;
+    }
+    if ('4_b' in f) summaryInfo[`${k_1040} 4b Taxable IRA distributions`] = f['4_b'];
+    if ('5_b' in f) summaryInfo[`${k_1040} 5b Taxable pensions and annuities`] = f['5_b'];
+
     if (healthSavingsAccount || additionalIncome) {
       // fill 8889 and schedule 1
       buildForm8889();
@@ -398,7 +424,7 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
     summaryInfo[`${k_1040} 24 Total Tax`] = f['24'];
 
     pushToDict(f, '25_a', federalTax);  // from W2
-    pushToDict(f, '25_b', 0);  // from 1099
+    pushToDict(f, '25_b', retirementFederalTax + governmentFederalTax);  // from 1099
     pushSum(f, '25_d', ['25_a', '25_b', '25_c']);
 
     const estimatedPayments = (d['EstimatedIncomeTax']?.['Federal'] || [])
@@ -528,6 +554,8 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
   function buildForm1040s1() {
     const f = form(k_1040s1);
     pushNameSsn(f);
+    pushToDict(f, '7', unemployment);  // unemployment compensation (1099-G box 1)
+    if (unemployment > 0) summaryInfo[`${k_1040s1} 7 Unemployment compensation`] = unemployment;
     if (k_8889 in formsState) {
       const hsa = formsState[k_8889] as D;
       const hsaDeduction = hsa['13'] || 0;
@@ -1377,9 +1405,14 @@ export function fillTaxes(d: D, yearConfig: TaxConfig): FillTaxesResult {
     pushToDict(f, '2', f1040['2_b'] || 0);
     pushToDict(f, '3', f1040['3_b'] || 0);
     pushToDict(f, '7', f1040['7_value'] || 0);
-    // line 16: other income = federal Schedule 1 additional income (1040 line 8), e.g. taxable HSA
-    pushToDict(f, '16', f1040['8'] || 0);
-    pushSum(f, '17', ['1', '2', '3', '7', '16']);
+    pushToDict(f, '9', f1040['4_b'] || 0);  // taxable IRA distributions
+    // line 10: taxable pensions and annuities; the line 29 exclusion (age 59 1/2) is not implemented
+    pushToDict(f, '10', f1040['5_b'] || 0);
+    pushToDict(f, '14', unemployment);
+    // line 16: other income = federal Schedule 1 additional income (1040 line 8) not reported on line 14,
+    // e.g. taxable HSA
+    pushToDict(f, '16', (f1040['8'] || 0) - unemployment);
+    pushSum(f, '17', ['1', '2', '3', '7', '9', '10', '14', '16']);
     // line 18: total federal adjustments to income (1040 line 10), e.g. HSA deduction
     pushToDict(f, '18', f1040['10'] || 0);
     pushToDict(f, '19', (f['17'] || 0) - (f['18'] || 0));

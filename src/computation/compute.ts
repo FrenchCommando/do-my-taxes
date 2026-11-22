@@ -22,6 +22,9 @@ export function buildInputDict(input: TaxInput): Record<string, unknown> {
     .filter(entry => marriedFilingJointly || entry.Owner !== 'spouse');
   const e1099 = input['1099'].map(withoutId);
   const e1098 = input['1098'].map(withoutId);
+  // like W2s, the spouse's 1099-R / 1099-G only count on a joint return
+  const e1099R = input['1099R'].map(withoutId).filter(entry => marriedFilingJointly || entry.Owner !== 'spouse');
+  const e1099G = input['1099G'].map(withoutId).filter(entry => marriedFilingJointly || entry.Owner !== 'spouse');
   const charitable = input.Charitable.map(withoutId);
   const other = input.Other.map(withoutId);
   // an empty date means "not given" (an empty string would sort before the senior cutoff)
@@ -34,6 +37,8 @@ export function buildInputDict(input: TaxInput): Record<string, unknown> {
     W2: w2,
     '1099': e1099,
     '1098': e1098,
+    '1099R': e1099R,
+    '1099G': e1099G,
     EstimatedIncomeTax: input.EstimatedIncomeTax,
     Charitable: charitable,
     Other: other,

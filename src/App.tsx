@@ -15,6 +15,8 @@ import { generateFilledPdfs } from './computation/pdf_filler';
 import W2Section from './components/W2Section';
 import Section1099 from './components/Section1099';
 import Section1098 from './components/Section1098';
+import Section1099R from './components/Section1099R';
+import Section1099G from './components/Section1099G';
 import EstimatedTaxSection from './components/EstimatedTaxSection';
 import CharitableSection from './components/CharitableSection';
 import OtherSection from './components/OtherSection';
@@ -204,6 +206,8 @@ function App() {
               <FilingSection />
               <W2Section />
               <Section1099 />
+              <Section1099R />
+              <Section1099G />
               <Section1098 />
               <HsaSection />
               <Schedule1aSection />

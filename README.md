@@ -6,7 +6,7 @@ https://frenchcommando.github.io/do-my-taxes/
 
 ## What it does
 
-1. You enter your W-2, 1099 (including trades), 1098, estimated tax payments, charitable contributions, and other deduction info
+1. You enter your W-2, 1099 (including trades), 1099-R, 1099-G, 1098, estimated tax payments, charitable contributions, and other deduction info
 2. Click **Compute Taxes** to run the full federal + NY state tax computation
 3. Review the summary (income, deductions, tax, refund/owed, NY state/city taxes) and marginal tax rates
 4. Download filled PDF forms (1040, Schedules 1/1-A/2/3/A/B/D, Forms 8949, 6251, 6781, 1116, 8889, 8959, 8960, NY IT-201, IT-196) and/or JSON output
@@ -46,6 +46,12 @@ Employer info, wages, federal/state/local tax withheld, Social Security and Medi
 ### 1099 Income
 Interest, dividends (ordinary and qualified), foreign tax paid, capital gain distributions, Section 1256 contracts (realized/unrealized), other income. Each 1099 has a collapsible **Trades** sub-section for Form 8949 entries (description, shares, dates, proceeds, cost, wash sale, short/long term, form code A-F).
 
+### 1099-R Retirement Distributions
+Gross distribution (box 1), taxable amount (box 2a, used as reported), withholding (boxes 4, 14, 17), distribution code (box 7) and the IRA/SEP/SIMPLE box. 401(k) distributions and in-plan Roth conversions go on Form 1040 lines 5a/5b, IRA distributions on 4a/4b; codes G and H check the rollover box. Form 8606 (IRA basis) is not computed.
+
+### 1099-G Unemployment
+Unemployment compensation (box 1) and federal/state tax withheld (boxes 4, 11). Flows to Schedule 1 line 7 and NY IT-201 line 14.
+
 ### 1098 Mortgage
 Lender info, principal balance, and individual mortgage payments (date, interest amount, principal amount). Mortgage interest is prorated if the balance exceeds $750k (federal) or $1M (NY).
 
@@ -73,7 +79,7 @@ Only needed if you had capital losses or excess foreign tax credit from the prio
 After computing, the right panel shows every key figure from the computation grouped by form: total income, AGI, taxable income, tax, payments, refund/owed, NY state and city taxes, AMT, NIIT, foreign tax credit, and more.
 
 ### Marginal rates panel
-Shows the marginal tax rate on your next dollar for each income category (W2 wages, short/long-term capital gains, qualified dividends, interest, 1256 contracts, HSA, charitable, mortgage, property tax, foreign tax credit). Each category shows federal, NY state, NYC, and combined rates, with all thresholds where rates change.
+Shows the marginal tax rate on your next dollar for each income category (W2 wages, short/long-term capital gains, qualified dividends, interest, 1256 contracts, HSA, charitable, mortgage, property tax, foreign tax credit, and 401(k) Roth conversions when you have a 1099-R). Each category shows federal, NY state, NYC, and combined rates, with all thresholds where rates change.
 
 ### Downloads
 
@@ -98,7 +104,8 @@ Shows the marginal tax rate on your next dollar for each income category (W2 wag
 
 The tax engine is a TypeScript port of [taxes1040](https://github.com/FrenchCommando/taxes1040), which has battle-tested computation for 2018-2026. Currently supports:
 
-- Federal Form 1040 (single or married filing jointly, no dependents)
+- Federal Form 1040 (single or married filing jointly, no dependents), including IRA / pension distributions (1099-R, lines 4-5)
+- Schedule 1 (unemployment compensation, HSA)
 - Schedule 1-A (tips, overtime, car loan interest, senior deduction)
 - Schedule 3 (foreign tax credit, excess Social Security withholding)
 - Schedule A (itemized deductions with SALT worksheet — $40k cap with phaseout; 2026: 0.5% AGI charitable floor and the 2/37 limitation for the 37% bracket)

@@ -63,6 +63,30 @@ export interface Entry1099 {
   'Other Description': string;
 }
 
+/** Form 1099-R. Box 2a is used as reported: Form 8606 (IRA basis, pro-rata rule) is not implemented. */
+export interface Entry1099R {
+  id: string; // UI-only
+  Payer: string;
+  Owner: W2Owner;
+  GrossDistribution: number; // box 1
+  TaxableAmount: number; // box 2a
+  DistributionCode: string; // box 7 (G direct rollover / in-plan Roth rollover, H Roth account to Roth IRA)
+  IRA: boolean; // box 7 IRA/SEP/SIMPLE: lines 4a/4b instead of 5a/5b
+  Federal_tax: number; // box 4
+  State_tax: number; // box 14
+  Local_tax: number; // box 17
+}
+
+/** Form 1099-G (unemployment compensation). */
+export interface Entry1099G {
+  id: string; // UI-only
+  Payer: string;
+  Owner: W2Owner;
+  Unemployment: number; // box 1
+  Federal_tax: number; // box 4
+  State_tax: number; // box 11
+}
+
 export interface MortgagePayment {
   Date: string;
   InterestAmount: number;
@@ -134,6 +158,8 @@ export interface TaxInput {
   W2: W2Entry[];
   '1099': Entry1099[];
   '1098': Entry1098[];
+  '1099R': Entry1099R[];
+  '1099G': Entry1099G[];
   EstimatedIncomeTax: EstimatedIncomeTax;
   Charitable: CharitableContribution[];
   Other: OtherEntry[];
@@ -192,6 +218,8 @@ export const DEFAULT_OPTIONAL_INPUT = {
   qualified_overtime: 0,
   qualified_overtime_1099: 0,
   vehicle_loans: [] as VehicleLoan[],
+  '1099R': [] as Entry1099R[],
+  '1099G': [] as Entry1099G[],
 };
 
 export function createEmptyW2(): W2Entry {
@@ -228,6 +256,19 @@ export function createEmpty1098(): Entry1098 {
     Recipient: '', LoanNumber: '', PrincipalBalance: 0,
     Payments: [],
   };
+}
+
+export function createEmpty1099R(): Entry1099R {
+  return {
+    id: crypto.randomUUID(),
+    Payer: '', Owner: 'self',
+    GrossDistribution: 0, TaxableAmount: 0, DistributionCode: '', IRA: false,
+    Federal_tax: 0, State_tax: 0, Local_tax: 0,
+  };
+}
+
+export function createEmpty1099G(): Entry1099G {
+  return { id: crypto.randomUUID(), Payer: '', Owner: 'self', Unemployment: 0, Federal_tax: 0, State_tax: 0 };
 }
 
 export function createEmptyCharitable(): CharitableContribution {
@@ -362,6 +403,8 @@ export function normalizeInput(raw: Partial<TaxInput>): TaxInput {
     W2: (raw.W2 ?? []).map(w2 => ({ ...createEmptyW2(), ...w2, id: w2.id ?? crypto.randomUUID() })),
     '1099': (raw['1099'] ?? []).map(entry => ({ ...createEmpty1099(), ...entry, id: entry.id ?? crypto.randomUUID() })),
     '1098': (raw['1098'] ?? []).map(entry => ({ ...createEmpty1098(), ...entry, id: entry.id ?? crypto.randomUUID() })),
+    '1099R': (raw['1099R'] ?? []).map(entry => ({ ...createEmpty1099R(), ...entry, id: entry.id ?? crypto.randomUUID() })),
+    '1099G': (raw['1099G'] ?? []).map(entry => ({ ...createEmpty1099G(), ...entry, id: entry.id ?? crypto.randomUUID() })),
     Charitable: (raw.Charitable ?? []).map(gift => ({ ...createEmptyCharitable(), ...gift, id: gift.id ?? crypto.randomUUID() })),
     Other: (raw.Other ?? []).map(other => ({ ...createEmptyOther(), ...other, id: other.id ?? crypto.randomUUID() })),
     EstimatedIncomeTax: { Federal: [], State: [], ...(raw.EstimatedIncomeTax ?? {}) },

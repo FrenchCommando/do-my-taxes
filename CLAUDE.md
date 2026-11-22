@@ -39,7 +39,7 @@ Public tool hosted on GitHub Pages at https://frenchcommando.github.io/do-my-tax
 ### UI Design
 - Dense one-pager with responsive column layout: two columns at `lg` (input + summary/marginal/downloads), three columns at `xl` (input + summary + marginal rates & downloads)
 - All sections are collapsible accordions, greyed/muted when empty
-- Sections mirror the input.json structure: W2, 1099 (with trades sub-section), 1098, Estimated Tax, Charitable, Other, Prior Year Carryover
+- Sections mirror the input.json structure: W2, 1099 (with trades sub-section), 1099-R, 1099-G, 1098, Estimated Tax, Charitable, Other, Prior Year Carryover
 - Repeatable entries (multiple W2s, 1099s, trades, mortgage payments, etc.) with add/remove
 - Pre-filled with sample data on first load
 - Dark/light mode toggle (defaults to system preference)
@@ -67,6 +67,10 @@ spouse          - first_name, initial, last_name, ssn, occupation, presidential_
 birth_date      - optional, Schedule 1-A senior deduction
 W2[]            - employer info, wages, taxes withheld, state/local, Owner ('self' | 'spouse')
 1099[]          - interest, dividends, foreign tax, trades[], 1256 contracts
+1099R[]         - GrossDistribution (box 1), TaxableAmount (box 2a), DistributionCode (box 7), IRA, Federal_tax /
+                  State_tax / Local_tax (boxes 4, 14, 17), Payer, Owner -> 1040 lines 4/5 (rollover box for G/H)
+1099G[]         - Unemployment (box 1), Federal_tax (box 4), State_tax (box 11), Payer, Owner
+                  -> Schedule 1 line 7, IT-201 line 14 (spouse entries count only on a joint return, like W2s)
 1098[]          - mortgage payments[], principal balance, lender info
 EstimatedIncomeTax  - Federal[] and State[] payments with dates/amounts
 Charitable[]    - entity name + amount (cash contributions) + DonorAdvisedFund

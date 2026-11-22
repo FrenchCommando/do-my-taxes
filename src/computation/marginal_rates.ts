@@ -140,6 +140,12 @@ function categories(baseData: D, baseMetrics: Metrics, config: TaxConfig): Categ
     ['Property tax', 'added to Schedule A line 5c / IT-196 line 6',
       (data, amount) => (data['Other'] ??= []).push({ PropertyTax: amount }), agi],
   ];
+  if ((baseData['1099R'] || []).length > 0) {
+    result.push(['Roth conversion (401(k) in-plan)', 'new fully taxable 1099-R, code G (1040 line 5b)',
+      (data, amount) => (data['1099R'] as D[]).push({
+        Payer: 'Marginal', GrossDistribution: amount, TaxableAmount: amount, DistributionCode: 'G',
+      }), INCOME_HORIZON]);
+  }
   if ((baseData['1098'] || []).length > 0) {
     result.push(['Mortgage interest', 'added to the first 1098 payment', addMortgageInterest, agi]);
   }

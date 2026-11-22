@@ -1,7 +1,7 @@
 // Port of taxes1040 computation/forms_core_2025.py, forms_core_2026.py (CONFIG_{year})
 // and the bracket functions from computation/forms_functions.py
 
-import { k_1040, k_6251, k_1116 } from './form_names';
+import { k_1040, k_1040s1, k_6251, k_1116 } from './form_names';
 
 export type FilingStatus = 'single' | 'married_filing_jointly';
 export const FILING_STATUSES: FilingStatus[] = ['single', 'married_filing_jointly'];
@@ -248,6 +248,9 @@ const FIELD_MAPS_2025: Record<string, FieldMap> = {
     '7_value': '7_a',
     '26': '26_value',
     '28': '28_value',
+  },
+  [k_1040s1]: {
+    '7': '7_value',  // 2025 added a repaid-unemployment checkbox on line 7
   },
   [k_6251]: {
     '1a_value': '1_a',  // 2025 split line 1 into 1a (line 14 - senior deduction) and 1b

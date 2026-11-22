@@ -5,6 +5,8 @@ import type {
   W2Entry,
   Entry1099,
   Entry1098,
+  Entry1099R,
+  Entry1099G,
   CharitableContribution,
   OtherEntry,
   EstimatedPayment,
@@ -18,6 +20,8 @@ import {
   createEmptyW2,
   createEmpty1099,
   createEmpty1098,
+  createEmpty1099R,
+  createEmpty1099G,
   createEmptyCharitable,
   createEmptyOther,
   createEmptyVehicleLoan,
@@ -62,6 +66,14 @@ interface TaxStore {
   addMortgagePayment: (entryId: string) => void;
   updateMortgagePayment: (entryId: string, index: number, data: Partial<MortgagePayment>) => void;
   removeMortgagePayment: (entryId: string, index: number) => void;
+
+  // 1099-R (retirement distributions) and 1099-G (unemployment)
+  add1099R: () => void;
+  update1099R: (id: string, data: Partial<Entry1099R>) => void;
+  remove1099R: (id: string) => void;
+  add1099G: () => void;
+  update1099G: (id: string, data: Partial<Entry1099G>) => void;
+  remove1099G: (id: string) => void;
 
   // Estimated tax
   addEstimatedPayment: (type: 'Federal' | 'State') => void;
@@ -210,6 +222,23 @@ export const useTaxStore = create<TaxStore>()(
           },
         })),
 
+      add1099R: () =>
+        set((s) => ({ input: { ...s.input, '1099R': [...s.input['1099R'], createEmpty1099R()] } })),
+      update1099R: (id, data) =>
+        set((s) => ({
+          input: { ...s.input, '1099R': s.input['1099R'].map((e) => (e.id === id ? { ...e, ...data } : e)) },
+        })),
+      remove1099R: (id) =>
+        set((s) => ({ input: { ...s.input, '1099R': s.input['1099R'].filter((e) => e.id !== id) } })),
+      add1099G: () =>
+        set((s) => ({ input: { ...s.input, '1099G': [...s.input['1099G'], createEmpty1099G()] } })),
+      update1099G: (id, data) =>
+        set((s) => ({
+          input: { ...s.input, '1099G': s.input['1099G'].map((e) => (e.id === id ? { ...e, ...data } : e)) },
+        })),
+      remove1099G: (id) =>
+        set((s) => ({ input: { ...s.input, '1099G': s.input['1099G'].filter((e) => e.id !== id) } })),
+
       addEstimatedPayment: (type) =>
         set((s) => ({
           input: {
@@ -285,10 +314,10 @@ export const useTaxStore = create<TaxStore>()(
     }),
     {
       name: 'tax-input-storage',
-      version: 3,
+      version: 4,
       // only the input is persisted; results are recomputed on demand
       partialize: (s) => ({ input: s.input }),
-      // v3 added MFJ / 2026 / Schedule 1-A / HSA fields: keep the user's data, fill in the new fields
+      // v3 added MFJ / 2026 / Schedule 1-A / HSA fields, v4 1099-R / 1099-G: keep the user's data, fill in the new fields
       migrate: (persisted, version) => ({
         input: version >= 2 && persisted && typeof persisted === 'object' && 'input' in persisted
           ? normalizeInput((persisted as { input: Partial<TaxInput> }).input)
